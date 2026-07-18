@@ -24,10 +24,34 @@ const userSchema = new mongoose.Schema(
     },
 
     role: {
-      type: String,
-      enum: ["customer", "admin"],
-      default: "customer",
-    },
+  type: String,
+  enum: ["admin", "shopOwner", "staff", "customer"],
+  default: "customer",
+},
+shopId: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: "Shop",
+  default: null,
+},
+assignedPrinter: {
+  type: String,
+  default: "",
+},
+
+employeeId: {
+  type: String,
+  unique: true,
+  sparse: true,
+},
+
+isAvailable: {
+  type: Boolean,
+  default: true,
+},
+
+lastLogin: {
+  type: Date,
+},
   },
   {
     timestamps: true,

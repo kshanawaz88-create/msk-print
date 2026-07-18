@@ -1,8 +1,9 @@
 import React from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 
 function Navbar() {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const user = JSON.parse(localStorage.getItem("user"));
 
@@ -12,68 +13,108 @@ function Navbar() {
     navigate("/login");
   };
 
+  const isActive = (path) =>
+    location.pathname === path ? "btn-light text-dark" : "btn-outline-light";
+
   return (
-    <nav className="navbar navbar-expand-lg navbar-dark bg-primary">
+    <nav className="navbar navbar-expand-lg navbar-dark bg-dark shadow">
       <div className="container">
 
         <Link className="navbar-brand fw-bold" to="/">
           🖨️ MSK Print Cloud
         </Link>
 
-        {/* Navigation Links */}
-        <div className="navbar-nav ms-4">
+        <button
+          className="navbar-toggler"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#navbarNav"
+        >
+          <span className="navbar-toggler-icon"></span>
+        </button>
 
-          <Link className="nav-link text-white" to="/">
-            Home
-          </Link>
+        <div className="collapse navbar-collapse" id="navbarNav">
 
-          {user && (
-            <>
-              <Link className="nav-link text-white" to="/dashboard">
-                Dashboard
-              </Link>
+          <div className="ms-auto d-flex align-items-center flex-wrap">
 
-              <Link className="nav-link text-white" to="/upload">
-                Upload
-              </Link>
-            </>
-          )}
+            {user ? (
+              <>
+                <Link
+                  to="/upload"
+                  className={`btn btn-sm me-2 ${isActive("/upload")}`}
+                >
+                  📤 Upload
+                </Link>
 
-        </div>
+                <Link
+                  to="/shops"
+                  className={`btn btn-sm me-2 ${isActive("/shops")}`}
+                >
+                  🏪 Shops
+                </Link>
 
-        {/* Right Side */}
-        <div className="ms-auto d-flex align-items-center">
+    <Link to="/staff" className="btn btn-warning me-2">
+  👨‍💼 Staff
+</Link>
 
-          {user && (
-            <span className="text-white me-3">
-              Welcome, {user.fullName}
-            </span>
-          )}
+<Link to="/staff-management" className="btn btn-warning me-2">
+  ➕ Add Staff
+</Link>
+                <Link
+                  to="/orders"
+                  className={`btn btn-sm me-2 ${isActive("/orders")}`}
+                >
+                  📦 Orders
+                </Link>
 
-          {user ? (
-            <button
-              className="btn btn-light btn-sm"
-              onClick={logout}
-            >
-              Logout
-            </button>
-          ) : (
-            <>
-              <Link
-                to="/login"
-                className="btn btn-light btn-sm me-2"
-              >
-                Login
-              </Link>
+                {user.role === "admin" && (
+                  <>
+                    <Link
+                      to="/admin"
+                      className={`btn btn-sm me-2 ${isActive("/admin")}`}
+                    >
+                      📊 Dashboard
+                    </Link>
 
-              <Link
-                to="/register"
-                className="btn btn-warning btn-sm"
-              >
-                Register
-              </Link>
-            </>
-          )}
+                    <Link
+                      to="/settings"
+                      className={`btn btn-sm me-2 ${isActive("/settings")}`}
+                    >
+                      ⚙️ Settings
+                    </Link>
+                  </>
+                )}
+
+                <span className="text-white me-3">
+                  👋 Welcome, {user.name}
+                </span>
+
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={logout}
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <>
+                <Link
+                  to="/login"
+                  className="btn btn-outline-light btn-sm me-2"
+                >
+                  Login
+                </Link>
+
+                <Link
+                  to="/register"
+                  className="btn btn-success btn-sm"
+                >
+                  Register
+                </Link>
+              </>
+            )}
+
+          </div>
 
         </div>
 

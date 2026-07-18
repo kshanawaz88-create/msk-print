@@ -19,15 +19,29 @@ function Login() {
 
       alert("Login Successful!");
 
-      window.location.href = "/upload";
+      const role = res.data.user.role;
 
+   if (role === "admin") {
+  window.location.href = "/admin";
+} else if (role === "shopOwner") {
+  window.location.href = "/upload";
+} else if (role === "staff") {
+  window.location.href = "/upload";
+} else {
+  window.location.href = "/upload";
+}
     } catch (error) {
       alert(error.response?.data?.message || "Login Failed");
     }
   };
 
   return (
-    <div style={{ maxWidth: "400px", margin: "50px auto" }}>
+    <div
+      style={{
+        maxWidth: "400px",
+        margin: "50px auto",
+      }}
+    >
       <h2>MSK Print Login</h2>
 
       <form onSubmit={login}>

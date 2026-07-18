@@ -3,7 +3,7 @@ const jwt = require("jsonwebtoken");
 const protect = (req, res, next) => {
   let token = req.headers.authorization;
 
-  if (!token) {
+  if (!token || !token.startsWith("Bearer ")) {
     return res.status(401).json({
       success: false,
       message: "No token provided",
@@ -13,11 +13,19 @@ const protect = (req, res, next) => {
   try {
     token = token.split(" ")[1];
 
-    const decoded = jwt.verify(token, "mskprintsecret");
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
 
-    req.user = decoded;
+    req.user = {
+      id: decoded.id,
+      role: decoded.role,
+      shopId: decoded.shopId || null,
+    };
 
     next();
+
   } catch (error) {
     return res.status(401).json({
       success: false,
@@ -27,7 +35,7 @@ const protect = (req, res, next) => {
 };
 
 const adminOnly = (req, res, next) => {
-  if (req.user && req.user.role === "admin") {
+  if (req.user.role === "admin") {
     return next();
   }
 
@@ -37,7 +45,37 @@ const adminOnly = (req, res, next) => {
   });
 };
 
+const shopOwnerOnly = (req, res, next) => {
+  if (
+    req.user.role === "shopOwner" ||
+    req.user.role === "admin"
+  ) {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: "Shop Owner access only",
+  });
+};
+
+const staffOnly = (req, res, next) => {
+  if (
+    req.user.role === "staff" ||
+    req.user.role === "admin"
+  ) {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: "Staff access only",
+  });
+};
+
 module.exports = {
   protect,
   adminOnly,
+  shopOwnerOnly,
+  staffOnly,
 };
