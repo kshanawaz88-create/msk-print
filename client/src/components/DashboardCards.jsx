@@ -18,7 +18,7 @@ function DashboardCards({ orders }) {
   ).length;
 
   const revenue = orders.reduce(
-    (sum, order) => sum + (order.price || 0),
+    (sum, order) => sum + (order.paymentStatus === "Paid" ? Number(order.price || 0) : 0),
     0
   );
 

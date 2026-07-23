@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import API from "../Services/Api";
 import Navbar from "../components/Navbar";
 import AddShopModal from "../components/AddShopModal";
@@ -36,6 +37,26 @@ function Shops() {
       loadShops();
     } catch (error) {
       console.log(error);
+    }
+  };
+
+  const editShop = async (shop) => {
+    const shopName = window.prompt("Shop name:", shop.shopName);
+    if (!shopName?.trim()) return;
+    const ownerName = window.prompt("Owner name:", shop.ownerName);
+    if (!ownerName?.trim()) return;
+    const email = window.prompt("Shop email:", shop.email);
+    if (!email?.trim()) return;
+
+    try {
+      await API.put(`/api/shops/${shop._id}`, {
+        shopName: shopName.trim(),
+        ownerName: ownerName.trim(),
+        email: email.trim(),
+      });
+      loadShops();
+    } catch (error) {
+      alert(error.response?.data?.message || "Unable to update shop");
     }
   };
 
@@ -112,6 +133,18 @@ function Shops() {
                       </td>
 
                       <td>
+                        <Link
+                          className="btn btn-primary btn-sm me-2"
+                          to={`/shops/${shop._id}/payment-settings`}
+                        >
+                          Payments
+                        </Link>
+                        <button
+                          className="btn btn-warning btn-sm me-2"
+                          onClick={() => editShop(shop)}
+                        >
+                          Edit
+                        </button>
                         <button
                           className="btn btn-danger btn-sm"
                           onClick={() => deleteShop(shop._id)}

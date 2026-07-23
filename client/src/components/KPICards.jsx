@@ -9,7 +9,7 @@ function KPICards({ orders }) {
   );
 
   const todaysRevenue = todaysOrders.reduce(
-    (total, order) => total + (order.price || 0),
+    (total, order) => total + (order.paymentStatus === "Paid" ? Number(order.price || 0) : 0),
     0
   );
 
@@ -18,12 +18,12 @@ function KPICards({ orders }) {
   ).size;
 
   const averageOrder =
-    orders.length > 0
+    orders.filter((order) => order.paymentStatus === "Paid").length > 0
       ? (
           orders.reduce(
-            (total, order) => total + (order.price || 0),
+            (total, order) => total + (order.paymentStatus === "Paid" ? Number(order.price || 0) : 0),
             0
-          ) / orders.length
+          ) / orders.filter((order) => order.paymentStatus === "Paid").length
         ).toFixed(2)
       : 0;
 

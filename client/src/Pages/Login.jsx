@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import API from "../Services/Api";
+import { clearSession, storeSession } from "../Services/session";
 
 function Login() {
   const [email, setEmail] = useState("");
@@ -7,6 +8,7 @@ function Login() {
 
   const login = async (e) => {
     e.preventDefault();
+    clearSession();
 
     try {
       const res = await API.post("/api/auth/login", {
@@ -14,22 +16,19 @@ function Login() {
         password,
       });
 
-      localStorage.setItem("token", res.data.token);
-      localStorage.setItem("user", JSON.stringify(res.data.user));
+      storeSession(res.data?.token, res.data?.user);
 
       alert("Login Successful!");
 
       const role = res.data.user.role;
 
-   if (role === "admin") {
-  window.location.href = "/admin";
-} else if (role === "shopOwner") {
-  window.location.href = "/upload";
-} else if (role === "staff") {
-  window.location.href = "/upload";
-} else {
-  window.location.href = "/upload";
-}
+      const destinations = {
+        admin: "/admin",
+        shopOwner: "/shop-owner",
+        staff: "/staff",
+        customer: "/upload",
+      };
+      window.location.href = destinations[role] || "/login";
     } catch (error) {
       alert(error.response?.data?.message || "Login Failed");
     }

@@ -1,0 +1,51 @@
+{
+  "name": "msk-print-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows desktop print agent for MSK Print Cloud",
+  "author": "MSK Print Cloud",
+  "main": "src/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/renderer.js",
+    "build": "electron-builder",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "pdf-to-printer": "5.8.0"
+  },
+  "devDependencies": {
+    "electron": "43.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "build": {
+    "appId": "com.mskprint.agent",
+    "productName": "MSK Print Agent",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MSK Print Agent"
+    }
+  }
+}

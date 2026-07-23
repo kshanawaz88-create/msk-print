@@ -24,6 +24,7 @@ function RevenueChart({ orders }) {
   const monthlyRevenue = {};
 
   orders.forEach((order) => {
+    if (order.paymentStatus !== "Paid") return;
     const month = new Date(order.createdAt).toLocaleString("default", {
       month: "short",
     });

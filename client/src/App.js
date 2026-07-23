@@ -1,5 +1,10 @@
 import React from "react";
-import { Routes, Route } from "react-router-dom";
+
+import {
+  Navigate,
+  Routes,
+  Route,
+} from "react-router-dom";
 
 import Home from "./Pages/Home";
 import Login from "./Pages/Login";
@@ -14,6 +19,9 @@ import Shops from "./Pages/Shops";
 import ShopOwner from "./Pages/ShopOwner";
 import Staff from "./Pages/Staff";
 import StaffManagement from "./Pages/StaffManagement";
+import Invoice from "./Pages/Invoice";
+import PublicShop from "./Pages/PublicShop";
+import QRCodePage from "./Pages/QRCode";
 
 import ProtectedRoute from "./components/ProtectedRoute";
 
@@ -21,14 +29,71 @@ function App() {
   return (
     <Routes>
 
-      {/* Public Routes */}
-      <Route path="/" element={<Home />} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/settings" element={<ShopSettings />} />
-      <Route path="/shops" element={<Shops />} />
+      {/* ================= PUBLIC ROUTES ================= */}
 
-      {/* Upload */}
+      <Route
+        path="/"
+        element={<Home />}
+      />
+
+      <Route
+        path="/login"
+        element={<Login />}
+      />
+
+      <Route
+        path="/register"
+        element={<Register />}
+      />
+
+      <Route
+        path="/shop/:shopCode"
+        element={<PublicShop />}
+      />
+
+      <Route
+        path="/shop/:shopCode/payment/:orderToken"
+        element={<Payment />}
+      />
+
+      <Route
+        path="/shop/:shopCode/success/:orderToken"
+        element={<Success />}
+      />
+
+      {/* ================= SHOP SETTINGS ================= */}
+
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute roles={["admin", "shopOwner"]}>
+            <ShopSettings />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/shops/:id/payment-settings"
+        element={
+          <ProtectedRoute roles={["admin", "shopOwner"]}>
+            <ShopSettings />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ================= SHOPS ================= */}
+
+      <Route
+        path="/shops"
+        element={
+          <ProtectedRoute roles={["admin"]}>
+            <Shops />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ================= UPLOAD ================= */}
+
       <Route
         path="/upload"
         element={
@@ -38,7 +103,8 @@ function App() {
         }
       />
 
-      {/* Payment */}
+      {/* ================= PAYMENT ================= */}
+
       <Route
         path="/payment"
         element={
@@ -48,7 +114,8 @@ function App() {
         }
       />
 
-      {/* Success */}
+      {/* ================= SUCCESS ================= */}
+
       <Route
         path="/success"
         element={
@@ -58,7 +125,8 @@ function App() {
         }
       />
 
-      {/* Orders */}
+      {/* ================= ORDERS ================= */}
+
       <Route
         path="/orders"
         element={
@@ -68,44 +136,75 @@ function App() {
         }
       />
 
-      {/* Admin */}
+      <Route
+        path="/invoice/:id"
+        element={
+          <ProtectedRoute>
+            <Invoice />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ================= ADMIN ================= */}
+
       <Route
         path="/admin"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute roles={["admin"]}>
             <Admin />
           </ProtectedRoute>
         }
       />
 
-      {/* Shop Owner */}
+      {/* ================= SHOP OWNER ================= */}
+
       <Route
         path="/shop-owner"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute roles={["shopOwner"]}>
             <ShopOwner />
           </ProtectedRoute>
         }
       />
 
-      {/* Staff */}
+      {/* ================= STAFF ================= */}
+
       <Route
         path="/staff"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute roles={["staff"]}>
             <Staff />
           </ProtectedRoute>
         }
       />
 
-      {/* Staff Management */}
+      {/* ================= STAFF MANAGEMENT ================= */}
+
       <Route
         path="/staff-management"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute roles={["admin"]}>
             <StaffManagement />
           </ProtectedRoute>
         }
+      />
+
+      {/* ================= QR CODE ================= */}
+
+      <Route
+        path="/qr-code"
+        element={
+          <ProtectedRoute roles={["admin", "shopOwner"]}>
+            <QRCodePage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ================= 404 ================= */}
+
+      <Route
+        path="*"
+        element={<Navigate to="/" replace />}
       />
 
     </Routes>

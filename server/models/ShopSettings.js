@@ -35,21 +35,26 @@ const shopSettingsSchema = new mongoose.Schema(
     blackWhitePrice: {
       type: Number,
       default: 2,
+      min: 0.01,
     },
 
     colorPrice: {
       type: Number,
       default: 10,
+      min: 0.01,
     },
 
     a3Price: {
       type: Number,
       default: 15,
+      min: 0.01,
     },
 
     gst: {
       type: Number,
       default: 18,
+      min: 0,
+      max: 100,
     },
 
     currency: {

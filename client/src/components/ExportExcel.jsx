@@ -1,45 +1,44 @@
 import React from "react";
-import * as XLSX from "xlsx";
-import { saveAs } from "file-saver";
 
-function ExportExcel({ orders }) {
-  const exportToExcel = () => {
-    const data = orders.map((order) => ({
-      Customer: order.user?.fullName || "N/A",
-      Email: order.user?.email || "N/A",
-      File: order.fileName,
-      Pages: order.pages,
-      Copies: order.copies,
-      "Print Type": order.printType,
-      Side: order.side,
-      Price: order.price,
-      Status: order.status,
-      Date: new Date(order.createdAt).toLocaleString(),
-    }));
+const safeCell = (value) => {
+  let text = String(value ?? "");
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+};
 
-    const worksheet = XLSX.utils.json_to_sheet(data);
-    const workbook = XLSX.utils.book_new();
-
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Orders");
-
-    const excelBuffer = XLSX.write(workbook, {
-      bookType: "xlsx",
-      type: "array",
-    });
-
-    const fileData = new Blob([excelBuffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-
-    saveAs(fileData, "MSK_Print_Orders.xlsx");
+function ExportExcel({ orders = [] }) {
+  const exportOrders = () => {
+    const headers = [
+      "Customer", "Email", "File", "Pages", "Copies",
+      "Print Type", "Side", "Price", "Payment", "Status", "Date",
+    ];
+    const rows = orders.map((order) => [
+      order.user?.fullName || "N/A",
+      order.user?.email || "N/A",
+      order.fileName,
+      order.pages,
+      order.copies,
+      order.printType,
+      order.side,
+      order.price,
+      order.paymentStatus,
+      order.status,
+      order.createdAt ? new Date(order.createdAt).toLocaleString() : "",
+    ]);
+    const csv = [headers, ...rows]
+      .map((row) => row.map(safeCell).join(","))
+      .join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "MSK_Print_Orders.csv";
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
-    <button
-      className="btn btn-success mb-3"
-      onClick={exportToExcel}
-    >
-      📥 Export Orders to Excel
+    <button className="btn btn-success mb-3" onClick={exportOrders}>
+      Export Orders
     </button>
   );
 }

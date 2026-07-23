@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import API from "../Services/Api";
+import Navbar from "../components/Navbar";
 
 const emptyForm = {
   fullName: "",
@@ -144,7 +145,7 @@ function StaffManagement() {
 
         alert("Staff updated successfully.");
       } else {
-        await API.post("/api/auth/create-staff", {
+        await API.post("/api/users/staff", {
           fullName: formData.fullName,
           email: formData.email,
           password: formData.password,
@@ -213,6 +214,8 @@ function StaffManagement() {
   });
 
   return (
+    <>
+    <Navbar />
     <div className="container mt-4 mb-5">
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
@@ -468,6 +471,7 @@ function StaffManagement() {
         </div>
       </div>
     </div>
+    </>
   );
 }
 

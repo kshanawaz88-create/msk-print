@@ -21,8 +21,8 @@ function AddShopModal({ show, onClose, onSuccess }) {
   };
 
   const createShop = async () => {
-    if (!form.shopName || !form.ownerName) {
-      alert("Please fill Shop Name and Owner Name");
+    if (!form.shopName || !form.ownerName || !form.email) {
+      alert("Please fill Shop Name, Owner Name and Email");
       return;
     }
 
@@ -42,7 +42,7 @@ function AddShopModal({ show, onClose, onSuccess }) {
       onClose();
     } catch (error) {
       console.log(error);
-      alert("Unable to create shop");
+      alert(error.response?.data?.message || "Unable to create shop");
     }
   };
 
@@ -71,6 +71,7 @@ function AddShopModal({ show, onClose, onSuccess }) {
               <div className="col-md-6 mb-3">
                 <label className="form-label">Shop Name</label>
                 <input
+                  type="email"
                   className="form-control"
                   name="shopName"
                   value={form.shopName}

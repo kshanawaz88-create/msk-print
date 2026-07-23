@@ -2,163 +2,84 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const sendEmail = require("../utils/sendEmail");
 
-// ===============================
-// Register User
-// ===============================
-const registerUser = async (req, res) => {
-  try {
-    const {
-      fullName,
-      email,
-      password,
-      role,
-      shopId,
-    } = req.body;
-
-    const existingUser = await User.findOne({
-      email,
-    });
-
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: "User already exists",
-      });
-    }
-
-    const user = await User.create({
-      fullName,
-      email,
-      password,
-
-      role: role || "customer",
-
-      shopId: shopId || null,
-    });
-
-    await sendEmail(
-      user.email,
-      "Welcome to MSK Print Cloud",
-      `Hello ${user.fullName},
-
-Welcome to MSK Print Cloud!
-
-Your account has been created successfully.
-
-Role: ${user.role}
-
-You can now login and start using the platform.
-
-Regards,
-MSK Print Cloud Team`
-    );
-
-  const token = jwt.sign(
-  {
-    id: user._id,
-    role: user.role,
-    shopId: user.shopId,
-  },
+const createToken = (user) => jwt.sign(
+  { id: user._id, role: user.role, shopId: user.shopId?._id || user.shopId || null },
   process.env.JWT_SECRET,
-  {
-    expiresIn: "7d",
-  }
+  { expiresIn: "7d" }
 );
 
-    res.status(201).json({
-      success: true,
-      message: "Registration successful",
-      token,
-      user: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-        shopId: user.shopId,
-      },
-    });
-
-  } catch (error) {
-    console.log(error);
-
-    res.status(500).json({
-      success: false,
-      message: "Server Error",
-    });
-  }
-};
-
-// ===============================
-// Login User
-// ===============================
-const loginUser = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    console.log("================================");
-    console.log("Login Attempt");
-    console.log("Email:", email);
-
-    const user = await User.findOne({ email }).populate("shopId");
-
-    console.log("User Found:", user);
-
-    if (!user) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid email or password",
-      });
-    }
-
-    console.log("Stored Hash:", user.password);
-
-    const isMatch = await user.comparePassword(password);
-
-    console.log("Password Match:", isMatch);
-
-    if (!isMatch) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid email or password",
-      });
-    }
-
-   const token = jwt.sign(
-  {
-    id: user._id,
-    role: user.role,
-    shopId: user.shopId ? user.shopId._id : null,
-  },
-  process.env.JWT_SECRET,
-  {
-    expiresIn: "7d",
-  }
-);
-    res.json({
-      success: true,
-      message: "Login successful",
-      token,
-     user: {
+const publicUser = (user) => ({
   id: user._id,
   fullName: user.fullName,
   email: user.email,
   role: user.role,
-  shopId: user.shopId,
-  assignedPrinter: user.assignedPrinter,
-  employeeId: user.employeeId,
-},
+  shopId: user.shopId || null,
+  assignedPrinter: user.assignedPrinter || "",
+  employeeId: user.employeeId || null,
+});
+
+const registerUser = async (req, res) => {
+  try {
+    const fullName = req.body.fullName?.trim();
+    const email = req.body.email?.trim().toLowerCase();
+    const password = req.body.password;
+
+    if (!fullName || !email || !password) {
+      return res.status(400).json({ success: false, message: "Full name, email and password are required" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, message: "Password must contain at least 6 characters" });
+    }
+    if (await User.exists({ email })) {
+      return res.status(409).json({ success: false, message: "An account with this email already exists" });
+    }
+
+    // Public registration is always a customer account.
+    const user = await User.create({ fullName, email, password, role: "customer" });
+    await sendEmail(email, "Welcome to MSK Print Cloud", `Hello ${fullName},\n\nYour customer account is ready.`);
+
+    return res.status(201).json({
+      success: true,
+      message: "Registration successful",
+      token: createToken(user),
+      user: publicUser(user),
     });
   } catch (error) {
-    console.log(error);
-
-    res.status(500).json({
-      success: false,
-      message: "Server Error",
-    });
+    console.error("Register error:", error.message);
+    return res.status(500).json({ success: false, message: "Unable to register" });
   }
 };
 
-module.exports = {
-  registerUser,
-  loginUser,
+const loginUser = async (req, res) => {
+  try {
+    const email = req.body.email?.trim().toLowerCase();
+    const password = req.body.password;
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: "Email and password are required" });
+    }
+
+    const user = await User.findOne({ email }).select("+password").populate("shopId", "shopName");
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({ success: false, message: "Invalid email or password" });
+    }
+    if (user.role === "staff" && user.isAvailable === false) {
+      return res.status(403).json({ success: false, message: "This staff account is inactive" });
+    }
+
+    user.lastLogin = new Date();
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: "Login successful",
+      token: createToken(user),
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Login error:", error.message);
+    return res.status(500).json({ success: false, message: "Unable to login" });
+  }
 };
+
+module.exports = { registerUser, loginUser };

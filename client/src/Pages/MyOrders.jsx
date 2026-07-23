@@ -1,115 +1,81 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import API from "../Services/Api";
 import Navbar from "../components/Navbar";
-import { jsPDF } from "jspdf";
+import OrderProgress from "../components/OrderProgress";
+
+const paymentBadge = (status) =>
+  status === "Paid" ? "success" :
+  ["Rejected", "Failed"].includes(status) ? "danger" :
+  status === "Refunded" ? "secondary" : "warning text-dark";
 
 function MyOrders() {
   const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    loadOrders();
+    API.get("/api/print")
+      .then((response) => setOrders(Array.isArray(response.data?.orders) ? response.data.orders : []))
+      .catch((loadError) => setError(loadError.response?.data?.message || "Unable to load orders"))
+      .finally(() => setLoading(false));
   }, []);
-
-  const loadOrders = async () => {
-    try {
-      const response = await API.get("/api/print");
-      setOrders(response.data);
-    } catch (error) {
-      console.log(error);
-    }
-  };
-
-  const downloadInvoice = (order) => {
-    const doc = new jsPDF();
-
-    doc.setFontSize(20);
-    doc.text("MSK Print Cloud", 20, 20);
-
-    doc.setFontSize(12);
-
-    doc.text(`File Name: ${order.fileName}`, 20, 40);
-    doc.text(`Pages: ${order.pages}`, 20, 50);
-    doc.text(`Copies: ${order.copies}`, 20, 60);
-    doc.text(`Print Type: ${order.printType}`, 20, 70);
-    doc.text(`Printing Side: ${order.side}`, 20, 80);
-    doc.text(`Price: ₹${order.price}`, 20, 90);
-    doc.text(`Status: ${order.status}`, 20, 100);
-
-    doc.text(
-      `Date: ${new Date(order.createdAt).toLocaleString()}`,
-      20,
-      110
-    );
-
-    doc.text("Thank you for choosing MSK Print Cloud!", 20, 130);
-
-    doc.save(`Invoice-${order.fileName}.pdf`);
-  };
 
   return (
     <>
       <Navbar />
-
-      <div className="container mt-5">
-
-        <h2 className="mb-4">📄 My Print Orders</h2>
-
-        <table className="table table-bordered table-striped table-hover">
-
-          <thead className="table-dark">
-            <tr>
-              <th>File Name</th>
-              <th>Pages</th>
-              <th>Copies</th>
-              <th>Price</th>
-              <th>Status</th>
-              <th>Invoice</th>
-            </tr>
-          </thead>
-
-          <tbody>
-
-            {orders.length === 0 ? (
-              <tr>
-                <td colSpan="6" className="text-center">
-                  No Orders Found
-                </td>
-              </tr>
-            ) : (
-              orders.map((order) => (
-                <tr key={order._id}>
-
-                  <td>{order.fileName}</td>
-
-                  <td>{order.pages}</td>
-
-                  <td>{order.copies}</td>
-
-                  <td>₹{order.price}</td>
-
-                  <td>
-                    <span className="badge bg-primary">
-                      {order.status}
-                    </span>
-                  </td>
-
-                  <td>
-                    <button
-                      className="btn btn-success btn-sm"
-                      onClick={() => downloadInvoice(order)}
-                    >
-                      📄 Download
-                    </button>
-                  </td>
-
+      <div className="container mt-5 mb-5">
+        <h2 className="mb-4">My Print Orders</h2>
+        {error && <div className="alert alert-danger">{error}</div>}
+        {loading ? (
+          <div className="text-center py-5">Loading orders...</div>
+        ) : orders.length === 0 ? (
+          <div className="alert alert-info">You have not created any print orders yet.</div>
+        ) : (
+          <div className="table-responsive">
+            <table className="table table-bordered table-hover align-middle">
+              <thead className="table-dark">
+                <tr>
+                  <th>Order</th><th>Print Settings</th><th>Price</th>
+                  <th>Payment</th><th>Progress</th><th>Created</th>
                 </tr>
-              ))
-            )}
-
-          </tbody>
-
-        </table>
-
+              </thead>
+              <tbody>
+                {orders.map((order) => (
+                  <tr key={order._id}>
+                    <td>
+                      <strong>{order.fileName || "Unnamed file"}</strong>
+                      <div className="small text-muted">{order.shopId?.shopName || "Shop unavailable"}</div>
+                      {order.paymentStatus === "Paid" && (
+                        <div className="small mt-1">Invoice: {order.invoiceNumber || "Generating"}</div>
+                      )}
+                      {order.paymentStatus === "Paid" && order.invoiceNumber && (
+                        <Link className="btn btn-sm btn-outline-primary mt-2" to={`/invoice/${order._id}`}>
+                          View Invoice
+                        </Link>
+                      )}
+                    </td>
+                    <td>
+                      {order.pages || 0} pages · {order.copies || 1} copies
+                      <div className="small text-muted">
+                        {order.printType || "Black & White"} · {order.side || "Single Side"} · {order.paperSize || "A4"}
+                      </div>
+                    </td>
+                    <td>₹{Number(order.price || 0).toFixed(2)}</td>
+                    <td>
+                      <span className={`badge bg-${paymentBadge(order.paymentStatus)}`}>
+                        Payment: {order.paymentStatus || "Pending"}
+                      </span>
+                      <div className="small mt-1">{order.paymentMethod || "Method not selected"}</div>
+                    </td>
+                    <td><OrderProgress status={order.status} /></td>
+                    <td>{order.createdAt ? new Date(order.createdAt).toLocaleString() : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </>
   );

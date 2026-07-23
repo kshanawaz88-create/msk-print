@@ -11,3 +11,38 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+.invoice-page {
+  max-width: 1050px;
+}
+
+.invoice-card {
+  background: #fff;
+}
+
+.invoice-logo {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .invoice-page {
+    width: 100%;
+    max-width: none;
+    margin: 0 !important;
+  }
+
+  .invoice-card {
+    box-shadow: none !important;
+  }
+}

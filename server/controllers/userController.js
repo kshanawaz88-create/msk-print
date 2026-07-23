@@ -1,4 +1,7 @@
 const User = require("../models/User");
+const Shop = require("../models/Shop");
+const mongoose = require("mongoose");
+const PrintJob = require("../models/printJob");
 
 // ======================================
 // Get All Staff
@@ -16,7 +19,7 @@ exports.getStaff = async (req, res) => {
       .populate("shopId", "shopName")
       .sort({ createdAt: -1 });
 
-    res.json(staff);
+    res.json({ success: true, count: staff.length, staff });
   } catch (error) {
     console.log(error);
 
@@ -48,6 +51,15 @@ exports.createStaff = async (req, res) => {
         message: "Name, email, password and shop are required",
       });
     }
+    if (!mongoose.isValidObjectId(shopId)) {
+      return res.status(400).json({ success: false, message: "Invalid shop ID" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, message: "Password must contain at least 6 characters" });
+    }
+    if (!(await Shop.exists({ _id: shopId }))) {
+      return res.status(400).json({ success: false, message: "Selected shop does not exist" });
+    }
 
     const existingUser = await User.findOne({
       email: email.toLowerCase(),
@@ -78,6 +90,8 @@ exports.createStaff = async (req, res) => {
       .select("-password")
       .populate("shopId", "shopName");
 
+    await Shop.findByIdAndUpdate(shopId, { $addToSet: { staff: staff._id } });
+
     res.status(201).json({
       success: true,
       message: "Staff created successfully",
@@ -98,6 +112,9 @@ exports.createStaff = async (req, res) => {
 // ======================================
 exports.updateStaff = async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid staff ID" });
+    }
     const staff = await User.findOne({
       _id: req.params.id,
       role: "staff",
@@ -142,7 +159,15 @@ exports.updateStaff = async (req, res) => {
       staff.email = email;
     }
 
+    let oldShopId;
     if (shopId !== undefined) {
+      if (shopId && !mongoose.isValidObjectId(shopId)) {
+        return res.status(400).json({ success: false, message: "Invalid shop ID" });
+      }
+      if (shopId && !(await Shop.exists({ _id: shopId }))) {
+        return res.status(400).json({ success: false, message: "Selected shop does not exist" });
+      }
+      oldShopId = staff.shopId;
       staff.shopId = shopId || null;
     }
 
@@ -171,6 +196,11 @@ exports.updateStaff = async (req, res) => {
 
     await staff.save();
 
+    if (shopId !== undefined && oldShopId?.toString() !== shopId) {
+      await Shop.updateMany({ staff: staff._id }, { $pull: { staff: staff._id } });
+      if (shopId) await Shop.findByIdAndUpdate(shopId, { $addToSet: { staff: staff._id } });
+    }
+
     const updatedStaff = await User.findById(staff._id)
       .select("-password")
       .populate("shopId", "shopName");
@@ -195,6 +225,9 @@ exports.updateStaff = async (req, res) => {
 // ======================================
 exports.deleteStaff = async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid staff ID" });
+    }
     const staff = await User.findOne({
       _id: req.params.id,
       role: "staff",
@@ -207,6 +240,8 @@ exports.deleteStaff = async (req, res) => {
       });
     }
 
+    await Shop.updateMany({ staff: staff._id }, { $pull: { staff: staff._id } });
+    await PrintJob.updateMany({ assignedStaff: staff._id }, { $set: { assignedStaff: null } });
     await staff.deleteOne();
 
     res.json({

@@ -12,7 +12,7 @@ const getShopSettings = async (req, res) => {
       settings = await ShopSettings.create({});
     }
 
-    res.json(settings);
+    res.json({ success: true, settings });
   } catch (error) {
     console.log(error);
 
@@ -28,16 +28,27 @@ const getShopSettings = async (req, res) => {
 // ===============================
 const updateShopSettings = async (req, res) => {
   try {
+    const allowed = [
+      "shopName", "logo", "phone", "email", "address", "website",
+      "blackWhitePrice", "colorPrice", "a3Price", "gst", "currency",
+      "openingTime", "closingTime",
+    ];
+    const updates = {};
+    allowed.forEach((field) => {
+      if (req.body[field] !== undefined) updates[field] = req.body[field];
+    });
+
     let settings = await ShopSettings.findOne();
 
     if (!settings) {
-      settings = await ShopSettings.create(req.body);
+      settings = await ShopSettings.create(updates);
     } else {
       settings = await ShopSettings.findByIdAndUpdate(
         settings._id,
-        req.body,
+        updates,
         {
           new: true,
+          runValidators: true,
         }
       );
     }
@@ -48,11 +59,11 @@ const updateShopSettings = async (req, res) => {
       settings,
     });
   } catch (error) {
-    console.log(error);
+    console.error("Settings update error:", error.message);
 
-    res.status(500).json({
+    res.status(error.name === "ValidationError" ? 400 : 500).json({
       success: false,
-      message: "Unable to update shop settings",
+      message: error.name === "ValidationError" ? error.message : "Unable to update shop settings",
     });
   }
 };

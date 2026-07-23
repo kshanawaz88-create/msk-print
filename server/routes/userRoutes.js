@@ -12,12 +12,15 @@ const {
   protect,
   adminOnly,
 } = require("../middleware/auth");
+const { validateStaff } = require("../middleware/validate");
 
-// All routes require admin login
 router.get(
   "/staff",
   protect,
-  adminOnly,
+  (req, res, next) => {
+    if (["admin", "shopOwner"].includes(req.user.role)) return next();
+    return res.status(403).json({ success: false, message: "Access denied" });
+  },
   getStaff
 );
 
@@ -25,6 +28,7 @@ router.post(
   "/staff",
   protect,
   adminOnly,
+  validateStaff(true),
   createStaff
 );
 
@@ -32,6 +36,7 @@ router.put(
   "/staff/:id",
   protect,
   adminOnly,
+  validateStaff(false),
   updateStaff
 );
 

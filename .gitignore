@@ -1,3 +1,28 @@
-node_modules
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment files
+.env
 server/.env
 client/.env
+**/.env
+
+# Build output
+client/build/
+print-agent/dist/
+print-agent/release/
+
+# Uploads
+server/uploads/
+uploads/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/

@@ -41,12 +41,16 @@ function PrintQueue({ orders, updateStatus }) {
 
         <button
           className="btn btn-primary mt-3"
+          disabled={nextStatus === "Completed" && order.paymentStatus !== "Paid"}
           onClick={() =>
             updateStatus(order._id, nextStatus)
           }
         >
           {buttonText}
         </button>
+        {nextStatus === "Completed" && order.paymentStatus !== "Paid" && (
+          <div className="small text-danger mt-2">Payment must be Paid before completion.</div>
+        )}
 
       </div>
     </div>
