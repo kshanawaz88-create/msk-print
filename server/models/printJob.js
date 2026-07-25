@@ -24,7 +24,6 @@ isGuestOrder: {
 
 publicOrderTokenHash: {
   type: String,
-  default: "",
   select: false,
 },
 
