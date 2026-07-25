@@ -110,29 +110,47 @@ function Admin() {
       );
     }
   };
+const approveCashPayment = async (id) => {
+  const confirmed = window.confirm(
+    "Confirm that cash has been received for this order?"
+  );
 
-  const approveCashPayment = async (id) => {
-    const confirmed = window.confirm(
-      "Confirm that cash has been received for this order?"
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const response = await API.patch(
+      `/api/payment/cash/${id}/verify`,
+      {
+        notes: "Cash received at shop",
+      }
     );
 
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      await API.patch(
-        `/api/payment/cash/${id}/verify`
-      );
-
-      loadOrders();
-    } catch (cashError) {
-      alert(
-        cashError.response?.data?.message ||
-          "Unable to approve cash payment"
+    if (!response.data?.success) {
+      throw new Error(
+        "The server could not approve this cash payment."
       );
     }
-  };
+
+    window.alert(
+      "Cash payment approved successfully."
+    );
+
+    await loadOrders();
+  } catch (cashError) {
+    console.error(
+      "Cash approval error:",
+      cashError
+    );
+
+    window.alert(
+      cashError.response?.data?.message ||
+        cashError.message ||
+        "Unable to approve cash payment"
+    );
+  }
+};
 
   const badgeColor = (status) => {
     switch (status) {
