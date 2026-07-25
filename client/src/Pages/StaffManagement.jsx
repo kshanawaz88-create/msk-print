@@ -18,6 +18,7 @@ function StaffManagement() {
   const [editingId, setEditingId] = useState(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [formData, setFormData] = useState(emptyForm);
 
   useEffect(() => {
@@ -39,8 +40,8 @@ function StaffManagement() {
         setStaff([]);
       }
     } catch (error) {
-      console.log("Load staff error:", error);
       setStaff([]);
+      setError(error.response?.data?.message || "Unable to load staff.");
     }
   };
 
@@ -56,8 +57,8 @@ function StaffManagement() {
         setShops([]);
       }
     } catch (error) {
-      console.log("Load shops error:", error);
       setShops([]);
+      setError(error.response?.data?.message || "Unable to load shops.");
     }
   };
 
@@ -124,6 +125,7 @@ function StaffManagement() {
 
     try {
       setLoading(true);
+      setError("");
 
       if (editingId) {
         const updateData = {
@@ -165,8 +167,7 @@ function StaffManagement() {
       resetForm();
       await loadStaff();
     } catch (error) {
-      console.log("Save staff error:", error);
-
+      setError(error.response?.data?.message || "Unable to save staff.");
       alert(
         error.response?.data?.message ||
           "Unable to save staff."
@@ -189,8 +190,7 @@ function StaffManagement() {
       alert("Staff deleted successfully.");
       await loadStaff();
     } catch (error) {
-      console.log("Delete staff error:", error);
-
+      setError(error.response?.data?.message || "Unable to delete staff.");
       alert(
         error.response?.data?.message ||
           "Unable to delete staff."
@@ -217,6 +217,7 @@ function StaffManagement() {
     <>
     <Navbar />
     <div className="container mt-4 mb-5">
+      {error && <div className="alert alert-danger">{error}</div>}
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
           <h2 className="mb-1">👨‍💼 Staff Management</h2>

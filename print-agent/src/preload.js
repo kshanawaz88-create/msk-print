@@ -7,6 +7,7 @@ const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
 contextBridge.exposeInMainWorld("printAgent", Object.freeze({
   getState: () => invoke("agent:get-state"),
   login: (credentials) => invoke("agent:login", credentials),
+  selectShop: (shopId) => invoke("agent:select-shop", shopId),
   logout: () => invoke("agent:logout"),
   refresh: () => invoke("agent:refresh"),
   detectPrinters: () => invoke("agent:detect-printers"),

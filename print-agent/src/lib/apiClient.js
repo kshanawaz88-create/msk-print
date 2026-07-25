@@ -60,13 +60,21 @@ class ApiClient {
   // ==========================================
 
   async login({ email, password }) {
-    return this._request("/api/agent/login", {
+    return this._request("/api/auth/login", {
       method: "POST",
       authenticated: false,
       body: {
         email,
         password,
       },
+    });
+  }
+
+  async createAgentSession(webToken, shopId = "") {
+    return this._request("/api/agent/session", {
+      method: "POST",
+      authorizationToken: webToken,
+      body: { ...(shopId ? { shopId } : {}) },
     });
   }
 
@@ -379,7 +387,7 @@ class ApiClient {
       };
 
       if (options.authenticated !== false) {
-        const token = await this.getToken();
+        const token = options.authorizationToken || await this.getToken();
 
         if (!token) {
           throw new ApiError(
@@ -400,10 +408,15 @@ class ApiClient {
         this.baseUrl
       );
 
+      const {
+        authenticated: _authenticated,
+        authorizationToken: _authorizationToken,
+        ...fetchOptions
+      } = options;
       const response = await this.fetch(
         url,
         {
-          ...options,
+          ...fetchOptions,
           headers,
           signal: controller.signal,
         }
@@ -411,7 +424,8 @@ class ApiClient {
 
       if (
         response.status === 401 &&
-        options.authenticated !== false
+        options.authenticated !== false &&
+        !options.authorizationToken
       ) {
         await this.onUnauthorized();
       }

@@ -22,6 +22,32 @@ isGuestOrder: {
   default: false,
 },
 
+guestName: {
+  type: String,
+  default: "",
+  trim: true,
+  maxlength: 100,
+},
+
+guestMobile: {
+  type: String,
+  default: "",
+  trim: true,
+  maxlength: 20,
+  set: (value) => String(value || "")
+    .replace(/[^0-9+()\s-]/g, "")
+    .trim()
+    .slice(0, 20),
+},
+
+guestEmail: {
+  type: String,
+  default: "",
+  trim: true,
+  lowercase: true,
+  maxlength: 254,
+},
+
 publicOrderTokenHash: {
   type: String,
   select: false,
@@ -163,6 +189,18 @@ publicOrderExpiresAt: {
       default: "",
     },
 
+    razorpayOrderCreationToken: {
+      type: String,
+      default: "",
+      select: false,
+    },
+
+    razorpayOrderCreationStartedAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+
     razorpayAmount: {
       type: Number,
       min: 0,
@@ -238,11 +276,28 @@ publicOrderExpiresAt: {
       default: null,
     },
 
+    printClaimExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+
     printAttemptCount: {
       type: Number,
       default: 0,
       min: 0,
       select: false,
+    },
+
+    lastReprintAt: {
+      type: Date,
+      default: null,
+    },
+
+    lastReprintBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
     },
 
     notes: {
@@ -261,6 +316,8 @@ publicOrderExpiresAt: {
     paymentNotes: {
       type: String,
       default: "",
+      trim: true,
+      maxlength: 500,
     },
   },
   {
@@ -274,7 +331,6 @@ printJobSchema.index({ assignedStaff: 1, createdAt: -1 });
 printJobSchema.index({ status: 1, createdAt: -1 });
 printJobSchema.index({ paymentStatus: 1, createdAt: -1 });
 printJobSchema.index({ createdAt: -1 });
-printJobSchema.index({ razorpayOrderId: 1 });
 printJobSchema.index({
   shopId: 1,
   paymentStatus: 1,
@@ -292,6 +348,37 @@ printJobSchema.index(
     unique: true,
     sparse: true,
     name: "publicOrderTokenHash_1",
+  }
+);
+printJobSchema.index(
+  { shopId: 1, razorpayOrderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      razorpayOrderId: { $type: "string", $gt: "" },
+    },
+    name: "shopId_razorpayOrderId_unique_nonempty",
+  }
+);
+printJobSchema.index(
+  { razorpayPaymentId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      razorpayPaymentId: { $type: "string", $gt: "" },
+    },
+    name: "razorpayPaymentId_unique_nonempty",
+  }
+);
+printJobSchema.index(
+  { upiReference: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      upiReference: { $type: "string", $gt: "" },
+    },
+    collation: { locale: "en", strength: 2 },
+    name: "upiReference_unique_nonempty",
   }
 );
 
@@ -313,7 +400,10 @@ printJobSchema.set("toJSON", {
     delete ret.fileSize;
     delete ret.printClaimHash;
     delete ret.printAgentSessionId;
+    delete ret.printClaimExpiresAt;
     delete ret.printAttemptCount;
+    delete ret.razorpayOrderCreationToken;
+    delete ret.razorpayOrderCreationStartedAt;
     delete ret.publicOrderTokenHash;
 delete ret.publicOrderExpiresAt;
     if (ret.paymentStatus === "Paid") {

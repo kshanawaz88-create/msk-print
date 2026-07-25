@@ -3,7 +3,12 @@ const jwt = require("jsonwebtoken");
 const sendEmail = require("../utils/sendEmail");
 
 const createToken = (user) => jwt.sign(
-  { id: user._id, role: user.role, shopId: user.shopId?._id || user.shopId || null },
+  {
+    id: user._id,
+    role: user.role,
+    shopId: user.shopId?._id || user.shopId || null,
+    scope: "web",
+  },
   process.env.JWT_SECRET,
   { expiresIn: "7d" }
 );
@@ -64,7 +69,11 @@ const loginUser = async (req, res) => {
       return res.status(401).json({ success: false, message: "Invalid email or password" });
     }
     if (user.role === "staff" && user.isAvailable === false) {
-      return res.status(403).json({ success: false, message: "This staff account is inactive" });
+      return res.status(403).json({
+        success: false,
+        code: "ACCOUNT_INACTIVE",
+        message: "This staff account is inactive",
+      });
     }
 
     user.lastLogin = new Date();

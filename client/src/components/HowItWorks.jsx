@@ -11,12 +11,12 @@ function HowItWorks() {
     {
       icon: <FaCloudUploadAlt size={45} className="text-primary" />,
       title: "1. Upload File",
-      text: "Upload your PDF, Word document, or image securely from any device.",
+      text: "Upload a PDF, JPG, or PNG from your device.",
     },
     {
       icon: <FaCreditCard size={45} className="text-success" />,
       title: "2. Pay Online",
-      text: "Select print options and complete your payment securely.",
+      text: "Select print options and choose Razorpay, UPI, or pay at shop when available.",
     },
     {
       icon: <FaPrint size={45} className="text-danger" />,
@@ -26,7 +26,7 @@ function HowItWorks() {
     {
       icon: <FaBoxOpen size={45} className="text-warning" />,
       title: "4. Collect",
-      text: "Visit the shop and collect your printed documents without waiting.",
+      text: "Track the order and visit the shop when it is ready for collection.",
     },
   ];
 

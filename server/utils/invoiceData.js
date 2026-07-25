@@ -1,12 +1,12 @@
-const ShopSettings = require("../models/ShopSettings");
 const { createInvoiceNumber } = require("./invoice");
+const { loadPricingSettings } = require("./pricing");
 
 const text = (value, fallback = "") =>
   typeof value === "string" && value.trim() ? value.trim() : fallback;
 
 const buildInvoiceData = async (job) => {
-  const settings = await ShopSettings.findOne().lean();
   const shop = job.shopId || {};
+  const settings = await loadPricingSettings(shop._id || shop);
   const customer = job.user || {};
   const total = Math.max(Number(job.price) || 0, 0);
   const gstRate = Math.min(Math.max(Number(settings?.gst) || 0, 0), 100);
@@ -35,8 +35,8 @@ const buildInvoiceData = async (job) => {
       gstNumber: text(shop.gstNumber),
     },
     customer: {
-      name: text(customer.fullName, "Customer"),
-      email: text(customer.email),
+      name: text(customer.fullName, text(job.guestName, "Customer")),
+      email: text(customer.email, text(job.guestEmail)),
     },
     order: {
       fileName: text(job.fileName, "Print file"),

@@ -36,6 +36,7 @@ let api;
 let printerService;
 let queueEngine;
 let broadcastChain = Promise.resolve();
+let pendingLogin = null;
 
 app.setName("MSK Print Agent");
 
@@ -109,6 +110,8 @@ const getRendererState = async () => {
   const engineState = queueEngine.getState();
   return {
     authenticated: Boolean(savedSession.token),
+    shopSelectionRequired: Boolean(pendingLogin),
+    availableShops: pendingLogin?.shops || [],
     user: savedSession.user,
     shop: savedSession.shop,
     queue: engineState.orders,
@@ -259,6 +262,27 @@ const detectPrinters = async () => {
   return printers;
 };
 
+const completeAgentLogin = async (response) => {
+  if (!response?.token || !response?.user || !response?.shop) {
+    throw new Error(response?.message || "The server returned an invalid agent session.");
+  }
+  await sessionStore.setSession({
+    token: response.token,
+    user: response.user,
+    shop: response.shop,
+  });
+  pendingLogin = null;
+  await logger.info("agent-login", {
+    userId: response.user.id,
+    role: response.user.role,
+    shopId: response.shop.id,
+  });
+  await detectPrinters();
+  await queueEngine.start();
+  await sendState();
+  return { state: await getRendererState() };
+};
+
 const login = async (credentials) => {
   if (!credentials || typeof credentials !== "object") {
     throw new Error("Login details are required.");
@@ -277,22 +301,13 @@ const login = async (credentials) => {
   };
 
   const response = await api.login(request);
-
-  if (
-    !response?.token ||
-    !response?.user ||
-    !response?.shop
-  ) {
-    throw new Error(
-      response?.message ||
-        "The server returned an invalid login response."
-    );
+  if (!response?.token || !response?.user) {
+    throw new Error(response?.message || "The server returned an invalid login response.");
   }
 
   const allowedRoles = [
     "admin",
     "shopOwner",
-    "staff",
   ];
 
   if (!allowedRoles.includes(response.user.role)) {
@@ -301,28 +316,45 @@ const login = async (credentials) => {
     );
   }
 
-  await sessionStore.setSession({
-    token: response.token,
-    user: response.user,
-    shop: response.shop,
-  });
+  try {
+    const agentSession = await api.createAgentSession(response.token);
+    return completeAgentLogin(agentSession);
+  } catch (error) {
+    if (error.code !== "SHOP_SELECTION_REQUIRED" || !Array.isArray(error.details)) {
+      throw error;
+    }
+    pendingLogin = {
+      token: response.token,
+      user: response.user,
+      shops: error.details.map((shop) => ({
+        id: String(shop.id || shop._id || ""),
+        shopName: String(shop.shopName || "Shop"),
+        shopCode: String(shop.shopCode || ""),
+      })).filter((shop) => JOB_ID.test(shop.id)),
+    };
+    if (!pendingLogin.shops.length) {
+      pendingLogin = null;
+      throw new Error("No active shop is available for the Print Agent.");
+    }
+    await sendState();
+    return { state: await getRendererState() };
+  }
+};
 
-  await logger.info("agent-login", {
-    userId: response.user.id,
-    role: response.user.role,
-    shopId: response.shop.id,
-  });
-
-  await detectPrinters();
-  await queueEngine.start();
-  await sendState();
-
-  return {
-    state: await getRendererState(),
-  };
+const selectAgentShop = async (shopId) => {
+  if (!pendingLogin?.token) {
+    throw new Error("Sign in again before selecting a shop.");
+  }
+  const selectedId = validateJobId(shopId);
+  if (!pendingLogin.shops.some((shop) => shop.id === selectedId)) {
+    throw new Error("Select an active shop from the list.");
+  }
+  const agentSession = await api.createAgentSession(pendingLogin.token, selectedId);
+  return completeAgentLogin(agentSession);
 };
 
 const logout = async () => {
+  pendingLogin = null;
   const engineState = queueEngine.getState();
   const savedSession = await sessionStore.getSession();
   if (engineState.current) {
@@ -367,6 +399,7 @@ const registerHandler = (channel, handler) => {
 const registerIpc = () => {
   registerHandler("agent:get-state", () => getRendererState());
   registerHandler("agent:login", login);
+  registerHandler("agent:select-shop", selectAgentShop);
   registerHandler("agent:logout", logout);
   registerHandler("agent:refresh", async () => {
     await detectPrinters();
@@ -481,7 +514,9 @@ const initialize = async () => {
     )
   );
 
-  const configuredUrl = process.env.MSK_PRINT_API_URL;
+  const configuredUrl =
+    process.env.MSK_PRINT_API_URL ||
+    process.env.REACT_APP_API_URL;
 
   if (configuredUrl) {
     await settingsStore.update({
@@ -490,11 +525,6 @@ const initialize = async () => {
   }
 
   const settings = await settingsStore.get();
-
-  console.log(
-    "MSK Print Agent API URL:",
-    settings.apiBaseUrl
-  );
 
   api = new ApiClient({
     baseUrl: settings.apiBaseUrl,

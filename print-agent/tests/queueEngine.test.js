@@ -91,6 +91,7 @@ class FakeApi {
     this.completed = [];
     this.errors = [];
     this.completeFailures = 0;
+    this.downloadFailures = 0;
   }
   async getQueue() {
     return { queue: structuredClone(this.orders), counts: {} };
@@ -108,6 +109,13 @@ class FakeApi {
   }
   async downloadFile(id, token, destination) {
     assert.ok(token);
+    if (this.downloadFailures > 0) {
+      this.downloadFailures -= 1;
+      throw new ApiError("Network unavailable", {
+        status: 0,
+        code: "NETWORK_ERROR",
+      });
+    }
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.writeFile(destination, `%PDF fake ${id}`);
     return { path: destination };
@@ -164,7 +172,7 @@ class FakePrinter {
   }
 }
 
-const createEngine = async (orders) => {
+const createEngine = async (orders, engineOptions = {}) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "msk-agent-queue-"));
   const api = new FakeApi(orders);
   const printer = new FakePrinter();
@@ -178,6 +186,7 @@ const createEngine = async (orders) => {
     sessionStore: session,
     tempDirectory: directory,
     randomToken: () => `${String(++tokenIndex).padStart(32, "a")}`,
+    ...engineOptions,
   });
   return { directory, engine, api, printer, settings, session };
 };
@@ -235,6 +244,27 @@ test("offline printer records Error, submits nothing, and auto-pauses the queue"
   assert.equal(fixture.engine.getState().lastError.code, "PRINTER_OFFLINE");
 });
 
+test("transient preparation failures stop at the configured retry limit", async (t) => {
+  const fixture = await createEngine(
+    [order(IDS[0], "2026-07-18T10:00:00.000Z")],
+    { maxPreparationRetries: 2 }
+  );
+  t.after(() => fs.rm(fixture.directory, { recursive: true, force: true }));
+  fixture.api.downloadFailures = 2;
+
+  await fixture.engine.tick();
+  await fixture.engine.waitForIdle();
+  assert.equal(fixture.api.errors.length, 0);
+  assert.equal(fixture.session.outbox.length, 0);
+
+  await fixture.engine.tick();
+  await fixture.engine.waitForIdle();
+  assert.equal(fixture.api.errors.length, 1);
+  assert.match(fixture.api.errors[0].reason, /retry limit reached/i);
+  assert.equal(fixture.printer.prints.length, 0);
+  assert.equal(fixture.session.outbox.length, 0);
+});
+
 test("lost completion response is retried from outbox without reprinting", async (t) => {
   const fixture = await createEngine([
     order(IDS[0], "2026-07-18T10:00:00.000Z"),
@@ -254,6 +284,36 @@ test("lost completion response is retried from outbox without reprinting", async
   assert.equal(fixture.api.completed.length, 2);
   assert.equal(fixture.session.outbox.length, 0);
   assert.equal(fixture.engine.getState().needsReview, null);
+});
+
+test("a deferred outcome rebinds its claim after the agent session changes", async (t) => {
+  const fixture = await createEngine([
+    order(IDS[0], "2026-07-18T10:00:00.000Z"),
+  ]);
+  t.after(() => fs.rm(fixture.directory, { recursive: true, force: true }));
+  fixture.api.completeFailures = 1;
+
+  await fixture.engine.tick();
+  await fixture.engine.waitForIdle();
+  assert.equal(fixture.session.outbox.length, 1);
+  assert.deepEqual(fixture.printer.prints, [IDS[0]]);
+
+  let refreshedSessionRejected = false;
+  fixture.api.markComplete = async (id) => {
+    fixture.api.completed.push(id);
+    if (!refreshedSessionRejected) {
+      refreshedSessionRejected = true;
+      throw new ApiError("Print claim is no longer valid", { status: 409 });
+    }
+    fixture.api.orders = fixture.api.orders.filter((entry) => entry.id !== id);
+    return { success: true };
+  };
+
+  await fixture.engine.tick();
+  await fixture.engine.waitForIdle();
+  assert.deepEqual(fixture.printer.prints, [IDS[0]]);
+  assert.deepEqual(fixture.api.claims, [IDS[0], IDS[0]]);
+  assert.equal(fixture.session.outbox.length, 0);
 });
 
 test("operator can safely mark a recovered Printing order as Error without printing", async (t) => {

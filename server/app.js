@@ -1,15 +1,25 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
+const mongoose = require("mongoose");
 const { apiLimiter } = require("./middleware/rateLimits");
 const { notFound, errorHandler } = require("./middleware/errors");
 
+const getAllowedOrigins = () => {
+  const configured = (process.env.CLIENT_URL || "http://localhost:3000")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  if (process.env.NODE_ENV !== "production") {
+    configured.push("http://localhost:3000", "http://localhost:3001");
+  }
+  return [...new Set(configured)];
+};
+
 const createApp = () => {
   const app = express();
-  const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:3000")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  const allowedOrigins = getAllowedOrigins();
+  app.locals.allowedOrigins = allowedOrigins;
 
   app.disable("x-powered-by");
   if (process.env.TRUST_PROXY === "true") app.set("trust proxy", 1);
@@ -38,11 +48,25 @@ const createApp = () => {
     require("./routes/webhookRoutes")
   );
   app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "100kb" }));
+
+  app.get("/api/health", (_req, res) => {
+    res.json({ success: true, status: "ok" });
+  });
+  app.get("/api/ready", (_req, res) => {
+    const ready = mongoose.connection.readyState === 1;
+    res.status(ready ? 200 : 503).json({
+      success: ready,
+      status: ready ? "ready" : "not-ready",
+    });
+  });
+
   app.use("/api", apiLimiter);
 
   // Keep the agent queue mounted before the generic /api/print/:id routes.
   app.use("/api/agent", require("./routes/printAgentAuthRoutes"));
   app.use("/api/print/queue", require("./routes/printAgentQueueRoutes"));
+  app.use("/api/public/payment", require("./routes/publicPaymentRoutes"));
+  app.use("/api/public", require("./routes/publicRoutes"));
   app.use("/api/print", require("./routes/printRoutes"));
   app.use("/api/auth", require("./routes/authRoutes"));
   app.use("/api/payment", require("./routes/paymentRoutes"));
@@ -60,4 +84,4 @@ const createApp = () => {
   return app;
 };
 
-module.exports = { createApp };
+module.exports = { createApp, getAllowedOrigins };

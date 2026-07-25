@@ -1,16 +1,3 @@
-const express = require("express");
-
-const {
-  loginPrintAgent,
-} = require("../controllers/printAgentAuthController");
-
-const router = express.Router();
-
-console.log("✅ agentRoutes.js loaded");
-
-router.post("/login", (req, res, next) => {
-  console.log("✅ POST /api/agent/login reached");
-  next();
-}, loginPrintAgent);
-
-module.exports = router;
+// Backward-compatible module name. The canonical route implementation includes
+// the same authentication rate limiter used by the rest of the application.
+module.exports = require("./printAgentAuthRoutes");

@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const axios = require("axios");
 
@@ -98,6 +99,34 @@ const applyDownloadHeaders = (res, job, contentLength) => {
   if (contentLength) res.set("Content-Length", contentLength);
 };
 
+class VerifiedFileStream extends Transform {
+  constructor(expectedSize = 0) {
+    super();
+    this.bytes = 0;
+    this.expectedSize = Number.isFinite(expectedSize) && expectedSize > 0
+      ? expectedSize
+      : 0;
+  }
+
+  _transform(chunk, encoding, callback) {
+    this.bytes += chunk.length;
+    if (this.bytes > MAX_FILE_BYTES) {
+      return callback(fileError("The print file exceeds the download limit", 409));
+    }
+    return callback(null, chunk);
+  }
+
+  _flush(callback) {
+    if (this.bytes === 0) {
+      return callback(fileError("The stored print file is empty", 502));
+    }
+    if (this.expectedSize && this.bytes !== this.expectedSize) {
+      return callback(fileError("The stored print file size does not match the order", 502));
+    }
+    return callback();
+  }
+}
+
 const streamPrintFile = async (job, res) => {
   const source = resolveSource(job);
   if (!source) throw fileError("The original print file is unavailable");
@@ -109,7 +138,7 @@ const streamPrintFile = async (job, res) => {
     } catch {
       throw fileError("The original print file is unavailable");
     }
-    if (!stat.isFile() || stat.size > MAX_FILE_BYTES) {
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_FILE_BYTES) {
       throw fileError("The original print file is invalid", 409);
     }
     applyDownloadHeaders(res, job, stat.size);
@@ -146,16 +175,33 @@ const streamPrintFile = async (job, res) => {
   }
 
   const length = Number(upstream.headers["content-length"]);
-  if (Number.isFinite(length) && length > MAX_FILE_BYTES) {
+  if (Number.isFinite(length) && (length <= 0 || length > MAX_FILE_BYTES)) {
     upstream.data.destroy();
-    throw fileError("The print file exceeds the download limit", 409);
+    throw fileError(
+      length <= 0 ? "The stored print file is empty" : "The print file exceeds the download limit",
+      length <= 0 ? 502 : 409
+    );
+  }
+  const storedSize = Number(job.fileSize);
+  if (
+    Number.isFinite(length) &&
+    Number.isFinite(storedSize) &&
+    storedSize > 0 &&
+    length !== storedSize
+  ) {
+    upstream.data.destroy();
+    throw fileError("The stored print file size does not match the order", 502);
   }
   applyDownloadHeaders(
     res,
     job,
     Number.isFinite(length) && length > 0 ? length : undefined
   );
-  await pipeline(upstream.data, res);
+  await pipeline(
+    upstream.data,
+    new VerifiedFileStream(Number.isFinite(storedSize) ? storedSize : 0),
+    res
+  );
 };
 
 module.exports = {

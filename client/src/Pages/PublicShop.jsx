@@ -17,6 +17,9 @@ function PublicShop() {
 
   const [shop, setShop] = useState(null);
   const [file, setFile] = useState(null);
+  const [customerName, setCustomerName] = useState("");
+  const [mobileNumber, setMobileNumber] = useState("");
+  const [email, setEmail] = useState("");
 
   const [copies, setCopies] = useState(1);
   const [printType, setPrintType] =
@@ -96,6 +99,7 @@ function PublicShop() {
       return;
     }
 
+    let active = true;
     const timer = setTimeout(async () => {
       try {
         setQuoting(true);
@@ -113,26 +117,32 @@ function PublicShop() {
           }
         );
 
-        setPrice(
-          Number(
-            response.data?.quote?.total ??
-              response.data?.price ??
-              0
-          )
-        );
+        if (active) {
+          setPrice(
+            Number(
+              response.data?.quote?.total ??
+                response.data?.price ??
+                0
+            )
+          );
+        }
       } catch (requestError) {
-        setPrice(0);
-
-        setError(
-          requestError.response?.data?.message ||
-            "Unable to calculate price."
-        );
+        if (active) {
+          setPrice(0);
+          setError(
+            requestError.response?.data?.message ||
+              "Unable to calculate price."
+          );
+        }
       } finally {
-        setQuoting(false);
+        if (active) setQuoting(false);
       }
     }, 350);
 
-    return () => clearTimeout(timer);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [
     shop,
     file,
@@ -148,6 +158,23 @@ function PublicShop() {
 
     if (!file) {
       setError("Please select a file.");
+      return;
+    }
+
+    const allowedTypes = ["application/pdf", "image/jpeg", "image/png"];
+    if (!allowedTypes.includes(file.type)) {
+      setError("Only PDF, JPG and PNG files are supported.");
+      return;
+    }
+
+    if (file.size > 20 * 1024 * 1024) {
+      setError("The selected file exceeds the 20 MB limit.");
+      return;
+    }
+
+    const normalizedMobile = mobileNumber.trim();
+    if (normalizedMobile && !/^\+?[0-9]{7,15}$/.test(normalizedMobile)) {
+      setError("Enter a valid mobile number using 7 to 15 digits.");
       return;
     }
 
@@ -172,6 +199,9 @@ function PublicShop() {
       formData.append("printType", printType);
       formData.append("side", side);
       formData.append("paperSize", paperSize);
+      if (customerName.trim()) formData.append("customerName", customerName.trim());
+      if (normalizedMobile) formData.append("mobileNumber", normalizedMobile);
+      if (email.trim()) formData.append("email", email.trim().toLowerCase());
 
       const response = await API.post(
         `/api/public/shops/${encodeURIComponent(
@@ -189,11 +219,6 @@ function PublicShop() {
           "Order was created, but no order token was returned."
         );
       }
-
-      localStorage.setItem(
-        "publicOrderToken",
-        orderToken
-      );
 
       navigate(
         `/shop/${encodeURIComponent(
@@ -359,6 +384,52 @@ function PublicShop() {
                 )}
 
                 <form onSubmit={submitOrder}>
+                  <div className="row">
+                    <div className="col-md-4 mb-3">
+                      <label className="form-label" htmlFor="guestCustomerName">
+                        Name <span className="text-muted">(optional)</span>
+                      </label>
+                      <input
+                        id="guestCustomerName"
+                        type="text"
+                        className="form-control"
+                        value={customerName}
+                        maxLength={100}
+                        autoComplete="name"
+                        onChange={(event) => setCustomerName(event.target.value)}
+                      />
+                    </div>
+                    <div className="col-md-4 mb-3">
+                      <label className="form-label" htmlFor="guestMobileNumber">
+                        Mobile <span className="text-muted">(optional)</span>
+                      </label>
+                      <input
+                        id="guestMobileNumber"
+                        type="tel"
+                        className="form-control"
+                        value={mobileNumber}
+                        maxLength={16}
+                        autoComplete="tel"
+                        placeholder="Digits only"
+                        onChange={(event) => setMobileNumber(event.target.value)}
+                      />
+                    </div>
+                    <div className="col-md-4 mb-3">
+                      <label className="form-label" htmlFor="guestEmail">
+                        Email <span className="text-muted">(optional)</span>
+                      </label>
+                      <input
+                        id="guestEmail"
+                        type="email"
+                        className="form-control"
+                        value={email}
+                        maxLength={254}
+                        autoComplete="email"
+                        onChange={(event) => setEmail(event.target.value)}
+                      />
+                    </div>
+                  </div>
+
                   <div className="mb-4">
                     <label className="form-label">
                       Select document

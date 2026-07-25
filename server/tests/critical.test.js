@@ -167,12 +167,16 @@ test("login token authenticates protected GET and multipart upload routes", asyn
     },
   });
   try {
+    const validPng = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
     for (let index = 0; index < 5; index += 1) {
       const multipart = await request(app)
         .post("/api/print")
         .set("Authorization", `Bearer ${login.body.token}`)
         .field("shopId", users.shopA._id.toString())
-        .attach("file", Buffer.from(`test image content ${index}`), {
+        .attach("file", validPng, {
           filename: `authenticated-upload-${index}.png`,
           contentType: "image/png",
         });
@@ -256,26 +260,20 @@ test("staff can only advance assigned orders through the sequential workflow", a
     .send({ status: "Ready" });
   assert.equal(skipped.status, 400);
 
-  for (const status of ["Printing", "Ready"]) {
+  const unpaidPrinting = await request(app)
+    .put(`/api/print/${job._id}`)
+    .set(auth(token))
+    .send({ status: "Printing" });
+  assert.equal(unpaidPrinting.status, 400);
+
+  await PrintJob.findByIdAndUpdate(job._id, { paymentStatus: "Paid" });
+  for (const status of ["Printing", "Ready", "Completed"]) {
     const response = await request(app)
       .put(`/api/print/${job._id}`)
       .set(auth(token))
       .send({ status });
     assert.equal(response.status, 200);
   }
-
-  const unpaidCompletion = await request(app)
-    .put(`/api/print/${job._id}`)
-    .set(auth(token))
-    .send({ status: "Completed" });
-  assert.equal(unpaidCompletion.status, 400);
-
-  await PrintJob.findByIdAndUpdate(job._id, { paymentStatus: "Paid" });
-  const completed = await request(app)
-    .put(`/api/print/${job._id}`)
-    .set(auth(token))
-    .send({ status: "Completed" });
-  assert.equal(completed.status, 200);
 });
 
 test("shop owner cannot update or assign orders outside their shop", async () => {

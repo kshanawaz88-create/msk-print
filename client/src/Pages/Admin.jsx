@@ -17,13 +17,21 @@ const allowedTransitions = {
   Ready: ["Completed", "Cancelled"],
   Completed: [],
   Cancelled: [],
+  Error: [],
 };
+
+const normalizedId = (value) =>
+  typeof value === "object" ? value?._id || value?.id || "" : value || "";
+
+const requiresPaidOrder = (status) =>
+  ["Printing", "Ready", "Completed"].includes(status);
 
 function Admin() {
   const [orders, setOrders] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [paymentFilter, setPaymentFilter] = useState("All");
+  const [shopFilter, setShopFilter] = useState("All");
   const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -33,7 +41,7 @@ function Admin() {
 
     API.get("/api/users/staff")
       .then((response) => {
-        setStaff(response.data.staff || []);
+        setStaff(Array.isArray(response.data?.staff) ? response.data.staff : []);
       })
       .catch(() => {
         setStaff([]);
@@ -54,7 +62,7 @@ function Admin() {
 
       const response = await API.get("/api/print");
 
-      setOrders(response.data.orders || []);
+      setOrders(Array.isArray(response.data?.orders) ? response.data.orders : []);
     } catch (loadError) {
       setError(
         loadError.response?.data?.message ||
@@ -66,6 +74,22 @@ function Admin() {
   };
 
   const updateStatus = async (id, status) => {
+    const selectedOrder = orders.find((order) => order._id === id);
+    if (
+      requiresPaidOrder(status) &&
+      selectedOrder?.paymentStatus !== "Paid"
+    ) {
+      window.alert("Payment must be Paid before this order can enter or advance in the print queue.");
+      return;
+    }
+
+    if (
+      ["Cancelled", "Completed"].includes(status) &&
+      !window.confirm(`Change this order's status to ${status}?`)
+    ) {
+      return;
+    }
+
     try {
       await API.put(`/api/print/${id}`, {
         status,
@@ -94,13 +118,22 @@ function Admin() {
   };
 
   const reviewUpiPayment = async (id, decision) => {
+    const action = decision === "approve" ? "approve" : "reject";
+    if (!window.confirm(`Confirm that you want to ${action} this UPI payment?`)) {
+      return;
+    }
+
     try {
-      await API.patch(
+      const response = await API.patch(
         `/api/payment/upi/${id}/verify`,
         {
           decision,
         }
       );
+
+      if (!response.data?.success) {
+        throw new Error(`The server could not ${action} this UPI payment.`);
+      }
 
       loadOrders();
     } catch (reviewError) {
@@ -110,9 +143,12 @@ function Admin() {
       );
     }
   };
-const approveCashPayment = async (id) => {
+const reviewCashPayment = async (id, decision) => {
+  const approving = decision === "approve";
   const confirmed = window.confirm(
-    "Confirm that cash has been received for this order?"
+    approving
+      ? "Confirm that cash has been received for this order?"
+      : "Reject this pending cash payment? The order will remain unpaid."
   );
 
   if (!confirmed) {
@@ -123,31 +159,27 @@ const approveCashPayment = async (id) => {
     const response = await API.patch(
       `/api/payment/cash/${id}/verify`,
       {
-        notes: "Cash received at shop",
+        decision,
+        notes: approving ? "Cash received at shop" : "Cash payment rejected by administrator",
       }
     );
 
     if (!response.data?.success) {
       throw new Error(
-        "The server could not approve this cash payment."
+        `The server could not ${approving ? "approve" : "reject"} this cash payment.`
       );
     }
 
     window.alert(
-      "Cash payment approved successfully."
+      `Cash payment ${approving ? "approved" : "rejected"} successfully.`
     );
 
     await loadOrders();
   } catch (cashError) {
-    console.error(
-      "Cash approval error:",
-      cashError
-    );
-
     window.alert(
       cashError.response?.data?.message ||
         cashError.message ||
-        "Unable to approve cash payment"
+        `Unable to ${approving ? "approve" : "reject"} cash payment`
     );
   }
 };
@@ -197,7 +229,10 @@ const approveCashPayment = async (id) => {
       order.fileName?.toLowerCase() || "";
 
     const customerName =
-      order.user?.fullName?.toLowerCase() || "";
+      (order.user?.fullName || order.customerName || "").toLowerCase();
+
+    const customerEmail =
+      (order.user?.email || order.customerEmail || "").toLowerCase();
 
     const invoice =
       order.invoiceNumber?.toLowerCase() || "";
@@ -205,14 +240,19 @@ const approveCashPayment = async (id) => {
     const upiReference =
       order.upiReference?.toLowerCase() || "";
 
+    const shopName =
+      (order.shopId?.shopName || order.shop?.shopName || "").toLowerCase();
+
     const query =
       search.trim().toLowerCase();
 
     const matchesSearch =
       fileName.includes(query) ||
       customerName.includes(query) ||
+      customerEmail.includes(query) ||
       invoice.includes(query) ||
-      upiReference.includes(query);
+      upiReference.includes(query) ||
+      shopName.includes(query);
 
     const matchesStatus =
       statusFilter === "All" ||
@@ -222,10 +262,28 @@ const approveCashPayment = async (id) => {
       paymentFilter === "All" ||
       order.paymentStatus === paymentFilter;
 
+    const matchesShop =
+      shopFilter === "All" ||
+      normalizedId(order.shopId || order.shop) === shopFilter;
+
     return matchesSearch &&
       matchesStatus &&
-      matchesPayment;
+      matchesPayment &&
+      matchesShop;
   });
+
+  const shopOptions = Array.from(
+    new Map(
+      orders
+        .map((order) => {
+          const source = order.shopId || order.shop;
+          const id = normalizedId(source);
+          const name = source?.shopName || source?.name || "";
+          return id && name ? [id, name] : null;
+        })
+        .filter(Boolean)
+    )
+  );
 
   return (
     <>
@@ -298,11 +356,11 @@ const approveCashPayment = async (id) => {
 
           <div className="card-body">
             <div className="row mb-4">
-              <div className="col-md-6 mb-2">
+              <div className="col-lg-4 mb-2">
                 <input
                   type="text"
                   className="form-control"
-                  placeholder="Search customer, file, invoice or UPI reference..."
+                  placeholder="Search customer, file, shop, invoice or UPI reference..."
                   value={search}
                   onChange={(event) =>
                     setSearch(
@@ -312,7 +370,7 @@ const approveCashPayment = async (id) => {
                 />
               </div>
 
-              <div className="col-md-3 mb-2">
+              <div className="col-lg-2 col-md-4 mb-2">
                 <select
                   className="form-select"
                   value={statusFilter}
@@ -345,10 +403,14 @@ const approveCashPayment = async (id) => {
                   <option value="Cancelled">
                     Cancelled
                   </option>
+
+                  <option value="Error">
+                    Error
+                  </option>
                 </select>
               </div>
 
-              <div className="col-md-3 mb-2">
+              <div className="col-lg-2 col-md-4 mb-2">
                 <select
                   className="form-select"
                   value={paymentFilter}
@@ -374,9 +436,27 @@ const approveCashPayment = async (id) => {
                     Rejected
                   </option>
 
+                  <option value="Failed">
+                    Failed
+                  </option>
+
                   <option value="Refunded">
                     Refunded
                   </option>
+                </select>
+              </div>
+
+              <div className="col-lg-2 col-md-4 mb-2">
+                <select
+                  className="form-select"
+                  aria-label="Filter by shop"
+                  value={shopFilter}
+                  onChange={(event) => setShopFilter(event.target.value)}
+                >
+                  <option value="All">All Shops</option>
+                  {shopOptions.map(([id, name]) => (
+                    <option key={id} value={id}>{name}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -421,7 +501,11 @@ const approveCashPayment = async (id) => {
                       <tr key={order._id}>
                         <td>
                           {order.user?.fullName ||
-                            "N/A"}
+                            order.customerName ||
+                            "Guest"}
+                          <div className="small text-muted">
+                            {order.shopId?.shopName || order.shop?.shopName || "Shop unavailable"}
+                          </div>
                         </td>
 
                         <td>
@@ -467,6 +551,12 @@ const approveCashPayment = async (id) => {
                           {order.invoiceNumber && (
                             <div className="small mt-1">
                               {order.invoiceNumber}
+                            </div>
+                          )}
+
+                          {order.upiReference && (
+                            <div className="small text-muted mt-1">
+                              UPI ref: {order.upiReference}
                             </div>
                           )}
 
@@ -518,17 +608,22 @@ const approveCashPayment = async (id) => {
                             "Cash" &&
                             order.paymentStatus ===
                               "Pending" && (
-                              <div className="mt-2">
+                              <div className="d-flex gap-1 mt-2">
                                 <button
                                   type="button"
-                                  className="btn btn-sm btn-success w-100"
+                                  className="btn btn-sm btn-success"
                                   onClick={() =>
-                                    approveCashPayment(
-                                      order._id
-                                    )
+                                    reviewCashPayment(order._id, "approve")
                                   }
                                 >
                                   Approve Cash
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-danger"
+                                  onClick={() => reviewCashPayment(order._id, "reject")}
+                                >
+                                  Reject
                                 </button>
                               </div>
                             )}
@@ -603,8 +698,7 @@ const approveCashPayment = async (id) => {
                                 key={status}
                                 value={status}
                                 disabled={
-                                  status ===
-                                    "Completed" &&
+                                  requiresPaidOrder(status) &&
                                   order.paymentStatus !==
                                     "Paid"
                                 }

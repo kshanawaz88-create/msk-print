@@ -89,6 +89,15 @@ function Payment() {
   const [error, setError] =
     useState("");
 
+  const paymentMethod = order?.paymentMethod || "";
+  const paymentStatus = order?.paymentStatus || "Pending";
+  const paymentMethodLocked = Boolean(paymentMethod);
+  const paymentPending = paymentMethodLocked && paymentStatus === "Pending";
+  const manualPaymentPending =
+    paymentPending && ["UPI", "Cash"].includes(paymentMethod);
+  const optionsLocked =
+    paymentMethodLocked || ["Paid", "Refunded"].includes(paymentStatus);
+
   /*
     Loads either:
 
@@ -312,7 +321,8 @@ function Payment() {
   useEffect(() => {
     if (
       !order?._id ||
-      isGuestPayment
+      isGuestPayment ||
+      optionsLocked
     ) {
       return undefined;
     }
@@ -397,6 +407,7 @@ function Payment() {
     printType,
     side,
     paperSize,
+    optionsLocked,
   ]);
 
   const authenticatedOptionsPayload =
@@ -452,16 +463,6 @@ function Payment() {
   const finishPayment = (
     jobId
   ) => {
-    localStorage.setItem(
-      "currentOrderId",
-      jobId
-    );
-
-    localStorage.setItem(
-      "completedJobId",
-      jobId
-    );
-
     if (isGuestPayment) {
       navigate(
         `/shop/${encodeURIComponent(
@@ -473,6 +474,16 @@ function Payment() {
 
       return;
     }
+
+    localStorage.setItem(
+      "currentOrderId",
+      jobId
+    );
+
+    localStorage.setItem(
+      "completedJobId",
+      jobId
+    );
 
     localStorage.removeItem(
       "printJobId"
@@ -499,6 +510,11 @@ function Payment() {
     }
 
     if (saving || quoting) {
+      return;
+    }
+
+    if (paymentMethodLocked && paymentMethod !== "Razorpay") {
+      setError(`This order already has a ${paymentMethod} payment in progress.`);
       return;
     }
 
@@ -685,6 +701,11 @@ function Payment() {
         return;
       }
 
+      if (paymentMethodLocked && paymentMethod !== "UPI") {
+        setError(`This order already has a ${paymentMethod} payment in progress.`);
+        return;
+      }
+
       const reference =
         window.prompt(
           "Enter your UPI transaction number."
@@ -741,6 +762,11 @@ function Payment() {
     };
     const selectCashPayment = async () => {
   if (saving || quoting) {
+    return;
+  }
+
+  if (paymentMethodLocked && paymentMethod !== "Cash") {
+    setError(`This order already has a ${paymentMethod} payment in progress.`);
     return;
   }
 
@@ -986,9 +1012,7 @@ function Payment() {
                             )
                           }
                           disabled={
-                            saving ||
-                            order.paymentStatus ===
-                              "Paid"
+                            saving || optionsLocked
                           }
                         />
                       </div>
@@ -1007,9 +1031,7 @@ function Payment() {
                             )
                           }
                           disabled={
-                            saving ||
-                            order.paymentStatus ===
-                              "Paid"
+                            saving || optionsLocked
                           }
                         >
                           <option value="Black & White">
@@ -1036,9 +1058,7 @@ function Payment() {
                             )
                           }
                           disabled={
-                            saving ||
-                            order.paymentStatus ===
-                              "Paid"
+                            saving || optionsLocked
                           }
                         >
                           <option value="Single Side">
@@ -1065,9 +1085,7 @@ function Payment() {
                             )
                           }
                           disabled={
-                            saving ||
-                            order.paymentStatus ===
-                              "Paid"
+                            saving || optionsLocked
                           }
                         >
                           <option value="A4">
@@ -1125,161 +1143,161 @@ function Payment() {
 
                   {!paymentConfig.paymentEnabled && (
                     <div className="alert alert-warning">
-                      Payments are currently disabled
-                      for this shop. Please contact
-                      the shop.
+                      Online payments are currently disabled for this shop.
+                      Pay at Shop / Cash remains available.
                     </div>
                   )}
 
-             {order.paymentStatus === "Paid" ? (
-  <div className="text-center">
-    <div className="alert alert-success">
-      This order is already paid.
-    </div>
+                  {paymentStatus === "Paid" ? (
+                    <div className="text-center">
+                      <div className="alert alert-success">This order is already paid.</div>
+                      <button
+                        type="button"
+                        className="btn btn-success btn-lg"
+                        onClick={() => finishPayment(order._id)}
+                      >
+                        Continue to Tracking
+                      </button>
+                    </div>
+                  ) : manualPaymentPending ? (
+                    <div className="text-center">
+                      <div className="alert alert-warning">
+                        {paymentMethod === "UPI"
+                          ? "Your UPI reference is awaiting shop verification."
+                          : "Pay at the shop counter. Printing starts only after the shop confirms receipt."}
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-lg"
+                        onClick={() => finishPayment(order._id)}
+                      >
+                        Track Order
+                      </button>
+                    </div>
+                  ) : ["Rejected", "Refunded"].includes(paymentStatus) ? (
+                    <div className="text-center">
+                      <div className="alert alert-danger">
+                        This payment is {paymentStatus.toLowerCase()}. Contact the shop before attempting another payment.
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-lg"
+                        onClick={() => finishPayment(order._id)}
+                      >
+                        Track Order
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="row g-3">
+                        {paymentConfig.razorpayAvailable &&
+                          (!paymentMethodLocked || paymentMethod === "Razorpay") && (
+                            <div className="col-md-4">
+                              <button
+                                type="button"
+                                className="btn btn-success btn-lg w-100"
+                                onClick={proceedRazorpayPayment}
+                                disabled={
+                                  saving ||
+                                  quoting ||
+                                  !price ||
+                                  !paymentConfig.paymentEnabled
+                                }
+                              >
+                                {saving
+                                  ? "Processing..."
+                                  : paymentMethod === "Razorpay"
+                                  ? "Continue with Razorpay"
+                                  : "Pay with Razorpay"}
+                              </button>
+                            </div>
+                          )}
 
-    <button
-      type="button"
-      className="btn btn-success btn-lg"
-      onClick={() =>
-        finishPayment(order._id)
-      }
-    >
-      Continue
-    </button>
-  </div>
-) : (
-  <>
-    <div className="row g-3">
-      {paymentConfig.razorpayAvailable && (
-        <div className="col-md-4">
-          <button
-            type="button"
-            className="btn btn-success btn-lg w-100"
-            onClick={proceedRazorpayPayment}
-            disabled={
-              saving ||
-              quoting ||
-              !price ||
-              !paymentConfig.paymentEnabled
-            }
-          >
-            {saving
-              ? "Processing..."
-              : "Pay with Razorpay"}
-          </button>
-        </div>
-      )}
+                        {paymentConfig.upiAvailable && !paymentMethodLocked && (
+                          <div className="col-md-4">
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-lg w-100"
+                              onClick={() => setShowQr((shown) => !shown)}
+                              disabled={
+                                saving ||
+                                quoting ||
+                                !price ||
+                                !paymentConfig.paymentEnabled
+                              }
+                            >
+                              {showQr ? "Hide UPI QR" : "Pay using UPI QR"}
+                            </button>
+                          </div>
+                        )}
 
-      {paymentConfig.upiAvailable && (
-        <div className="col-md-4">
-          <button
-            type="button"
-            className="btn btn-primary btn-lg w-100"
-            onClick={() =>
-              setShowQr(
-                (shown) => !shown
-              )
-            }
-            disabled={
-              saving ||
-              quoting ||
-              !price ||
-              !paymentConfig.paymentEnabled
-            }
-          >
-            {showQr
-              ? "Hide UPI QR"
-              : "Pay using UPI QR"}
-          </button>
-        </div>
-      )}
+                        {!paymentMethodLocked && (
+                          <div className="col-md-4">
+                            <button
+                              type="button"
+                              className="btn btn-dark btn-lg w-100"
+                              onClick={selectCashPayment}
+                              disabled={saving || quoting || !price}
+                            >
+                              {saving ? "Processing..." : "Pay at Shop / Cash"}
+                            </button>
+                            <div className="form-text text-center mt-2">
+                              Your order will print after the shop confirms the cash payment.
+                            </div>
+                          </div>
+                        )}
+                      </div>
 
-      <div className="col-md-4">
-        <button
-          type="button"
-          className="btn btn-dark btn-lg w-100"
-          onClick={selectCashPayment}
-          disabled={
-            saving ||
-            quoting ||
-            !price
-          }
-        >
-          {saving
-            ? "Processing..."
-            : "Pay at Shop / Cash"}
-        </button>
+                      {paymentConfig.paymentEnabled &&
+                        !paymentConfig.razorpayAvailable &&
+                        !paymentConfig.upiAvailable && (
+                          <div className="alert alert-warning mt-3">
+                            This shop has not completed its online payment configuration.
+                            You can still choose Pay at Shop / Cash.
+                          </div>
+                        )}
 
-        <div className="form-text text-center mt-2">
-          Your order will print after the shop confirms the cash payment.
-        </div>
-      </div>
-    </div>
-
-    {paymentConfig.paymentEnabled &&
-      !paymentConfig.razorpayAvailable &&
-      !paymentConfig.upiAvailable && (
-        <div className="alert alert-warning mt-3">
-          This shop has not completed its online payment configuration.
-          You can still choose Pay at Shop / Cash.
-        </div>
-      )}
-
-    {showQr && upiPaymentLink && (
-      <div className="card mt-4 border-primary">
-        <div className="card-body text-center">
-          <h4>Scan and Pay</h4>
-
-          <p className="text-muted">
-            Use any UPI application
-          </p>
-
-          <div className="d-inline-block p-3 bg-white border rounded">
-            <QRCodeSVG
-              value={upiPaymentLink}
-              size={230}
-              level="H"
-              title="UPI payment QR code"
-            />
-          </div>
-
-          <h4 className="mt-3">
-            Amount:{" "}
-            {paymentConfig.currencySymbol}
-            {Number(price).toFixed(2)}
-          </h4>
-
-          <p className="mb-1">
-            <strong>UPI ID:</strong>{" "}
-            {paymentConfig.upiId}
-          </p>
-
-          <a
-            href={upiPaymentLink}
-            className="btn btn-outline-primary mt-3 me-2"
-          >
-            Open UPI App
-          </a>
-
-          <button
-            type="button"
-            className="btn btn-success mt-3"
-            onClick={
-              confirmManualUpiPayment
-            }
-            disabled={saving}
-          >
-            I Have Paid
-          </button>
-
-          <div className="alert alert-warning mt-3 mb-0">
-            UPI payments remain pending until the shop verifies the reference.
-          </div>
-        </div>
-      </div>
-    )}
-  </>
-)}
+                      {showQr && upiPaymentLink && !paymentMethodLocked && (
+                        <div className="card mt-4 border-primary">
+                          <div className="card-body text-center">
+                            <h4>Scan and Pay</h4>
+                            <p className="text-muted">Use any UPI application</p>
+                            <div className="d-inline-block p-3 bg-white border rounded">
+                              <QRCodeSVG
+                                value={upiPaymentLink}
+                                size={230}
+                                level="H"
+                                title="UPI payment QR code"
+                              />
+                            </div>
+                            <h4 className="mt-3">
+                              Amount: {paymentConfig.currencySymbol}{Number(price).toFixed(2)}
+                            </h4>
+                            <p className="mb-1">
+                              <strong>UPI ID:</strong> {paymentConfig.upiId}
+                            </p>
+                            <a
+                              href={upiPaymentLink}
+                              className="btn btn-outline-primary mt-3 me-2"
+                            >
+                              Open UPI App
+                            </a>
+                            <button
+                              type="button"
+                              className="btn btn-success mt-3"
+                              onClick={confirmManualUpiPayment}
+                              disabled={saving}
+                            >
+                              I Have Paid
+                            </button>
+                            <div className="alert alert-warning mt-3 mb-0">
+                              UPI payments remain pending until the shop verifies the reference.
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                   {isGuestPayment && (
                     <div className="text-center text-muted small mt-4">
                       Keep this page open until your

@@ -3,8 +3,8 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const PrintJob = require("../models/printJob");
-const { createInvoiceNumber } = require("../utils/invoice");
 const paymentService = require("../services/shopPaymentService");
+const paymentWorkflow = require("../services/paymentWorkflowService");
 
 const router = express.Router();
 
@@ -18,7 +18,7 @@ router.post("/:shopId", async (req, res, next) => {
     }
 
     const signature = req.get("x-razorpay-signature") || "";
-    if (!signature) {
+    if (!/^[a-f0-9]{64}$/i.test(signature)) {
       return res.status(400).json({ success: false, message: "Webhook signature is required" });
     }
 
@@ -28,8 +28,10 @@ router.post("/:shopId", async (req, res, next) => {
     }
     const secret = paymentService.resolveWebhookSecret(shop);
     const expected = crypto.createHmac("sha256", secret).update(req.body).digest("hex");
-    const valid = expected.length === signature.length &&
-      crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    const valid = crypto.timingSafeEqual(
+      Buffer.from(expected, "hex"),
+      Buffer.from(signature, "hex")
+    );
     if (!valid) {
       return res.status(401).json({ success: false, message: "Invalid webhook signature" });
     }
@@ -87,43 +89,19 @@ router.post("/:shopId", async (req, res, next) => {
       return res.json({ success: true, message: "Refunded print order was not changed" });
     }
 
-    const paymentUsedElsewhere = await PrintJob.exists({
-      _id: { $ne: job._id },
-      razorpayPaymentId: payment.id,
-      paymentStatus: "Paid",
+    const result = await paymentWorkflow.finalizeRazorpayPayment({
+      job,
+      paymentId: payment.id,
+      signature: "",
+      verifiedBy: null,
+      note: job.status === "Cancelled"
+        ? "Captured payment reconciled for a cancelled order; manual refund review required"
+        : "Razorpay captured payment reconciled by verified shop webhook",
     });
-    if (paymentUsedElsewhere) {
-      return res.status(409).json({
-        success: false,
-        message: "Payment is already linked to another print order",
-      });
-    }
-
-    const updated = await PrintJob.findOneAndUpdate(
-      {
-        _id: job._id,
-        shopId: shop._id,
-        razorpayOrderId: payment.order_id,
-        paymentMethod: "Razorpay",
-        paymentStatus: { $in: ["Pending", "Failed"] },
-      },
-      {
-        $set: {
-          paymentStatus: "Paid",
-          status: "Pending",
-          razorpayPaymentId: payment.id,
-          paymentVerifiedAt: new Date(),
-          paymentVerifiedBy: null,
-          invoiceNumber: job.invoiceNumber || createInvoiceNumber(job._id),
-          paymentNotes: "Razorpay captured payment reconciled by verified shop webhook",
-        },
-      },
-      { returnDocument: "after", runValidators: true }
-    );
 
     return res.json({
       success: true,
-      message: updated ? "Payment reconciled" : "Payment already finalized",
+      message: result.idempotent ? "Payment already reconciled" : "Payment reconciled",
     });
   } catch (error) {
     next(error);

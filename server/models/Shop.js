@@ -58,7 +58,7 @@ const shopSchema = new mongoose.Schema(
 
     currency: {
       type: String,
-      default: "₹",
+      default: "INR",
     },
 
     isActive: {
@@ -74,7 +74,6 @@ const shopSchema = new mongoose.Schema(
       sparse: true,
       uppercase: true,
       trim: true,
-      index: true,
     },
 
     subscriptionPlan: {

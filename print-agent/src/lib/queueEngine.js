@@ -18,6 +18,7 @@ class QueueEngine extends EventEmitter {
     setTimer = setTimeout,
     clearTimer = clearTimeout,
     now = () => new Date(),
+    maxPreparationRetries = 5,
     tempDirectory = path.join(os.tmpdir(), "msk-print-agent"),
   }) {
     super();
@@ -34,6 +35,11 @@ class QueueEngine extends EventEmitter {
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.now = now;
+    this.maxPreparationRetries = Math.min(
+      Math.max(Number(maxPreparationRetries) || 5, 1),
+      20
+    );
+    this.preparationRetries = new Map();
     this.tempDirectory = tempDirectory;
     this.timer = null;
     this.pollPromise = null;
@@ -204,6 +210,9 @@ class QueueEngine extends EventEmitter {
       typeof reason === "string" && reason.trim()
         ? reason.replace(/[\r\n\t]+/g, " ").trim().slice(0, 500)
         : "Operator marked an interrupted print attempt as Error";
+    // Rebind a recovered claim to the newly authenticated agent session before
+    // changing an active server-side print state. This never submits the file.
+    await this.api.claim(review.jobId, claimToken);
     const reported = await this._reportOutcome(review.jobId, "error", {
       errorReason: message,
       printerName: review.printerName,
@@ -371,6 +380,7 @@ class QueueEngine extends EventEmitter {
       try {
         await this.api.markStarted(jobId, claimToken, printerName);
         serverStartAcknowledged = true;
+        this.preparationRetries.delete(jobId);
       } catch (error) {
         this.state.needsReview = {
           jobId,
@@ -443,13 +453,27 @@ class QueueEngine extends EventEmitter {
         this.state.current?.phase !== "starting" &&
         error.retriable === true
       ) {
-        await this._journal(jobId, "claimed", printerName);
-        await this.logger?.warn("print-preparation-deferred", {
-          jobId,
-          code: error.code,
-          message: error.message,
-        });
-        throw error;
+        const attempt = (this.preparationRetries.get(jobId) || 0) + 1;
+        this.preparationRetries.set(jobId, attempt);
+        if (attempt >= this.maxPreparationRetries) {
+          error.retriable = false;
+          error.message = `Preparation retry limit reached: ${error.message}`;
+          await this.logger?.error("print-preparation-retries-exhausted", {
+            jobId,
+            attempts: attempt,
+            code: error.code,
+          });
+        } else {
+          await this._journal(jobId, "claimed", printerName);
+          await this.logger?.warn("print-preparation-deferred", {
+            jobId,
+            attempt,
+            maxAttempts: this.maxPreparationRetries,
+            code: error.code,
+            message: error.message,
+          });
+          throw error;
+        }
       }
       if (["PRINTER_OFFLINE", "PAPER_OUT"].includes(error.code)) {
         this.state.paused = true;
@@ -472,10 +496,11 @@ class QueueEngine extends EventEmitter {
           ? null
           : { jobId, reason, phase: error.ambiguous ? "ambiguous" : "failed" };
       } else if (this.state.current?.phase !== "starting") {
-        await this._reportOutcome(jobId, "error", {
+        const reported = await this._reportOutcome(jobId, "error", {
           printerName,
           errorReason: `Print preparation failed: ${error.message}`.slice(0, 500),
         });
+        if (reported) this.preparationRetries.delete(jobId);
       }
       throw error;
     } finally {
@@ -503,7 +528,12 @@ class QueueEngine extends EventEmitter {
       createdAt: this.now().toISOString(),
     });
     try {
-      await this._sendOutcome(jobId, action, claimToken, payload);
+      await this._sendOutcomeWithSessionRecovery(
+        jobId,
+        action,
+        claimToken,
+        payload
+      );
       await this._acknowledgeOutcome(jobId, action);
       return true;
     } catch (error) {
@@ -530,7 +560,7 @@ class QueueEngine extends EventEmitter {
         continue;
       }
       try {
-        await this._sendOutcome(
+        await this._sendOutcomeWithSessionRecovery(
           entry.jobId,
           entry.action,
           claimToken,
@@ -566,6 +596,18 @@ class QueueEngine extends EventEmitter {
       );
     }
     return this.api.cancel(jobId, claimToken, payload.errorReason);
+  }
+
+  async _sendOutcomeWithSessionRecovery(jobId, action, claimToken, payload) {
+    try {
+      return await this._sendOutcome(jobId, action, claimToken, payload);
+    } catch (error) {
+      if (error?.status !== 409) throw error;
+      // A web login refresh creates a new scoped agent session. Rebind only the
+      // already-known claim token before retrying an active outcome callback.
+      await this.api.claim(jobId, claimToken);
+      return this._sendOutcome(jobId, action, claimToken, payload);
+    }
   }
 
   async _acknowledgeOutcome(jobId, action) {

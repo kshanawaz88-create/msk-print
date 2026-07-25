@@ -33,8 +33,7 @@
           <h1>MSK Print Agent</h1>
 
           <p class="muted">
-            Sign in with an administrator, shop owner,
-            or authorized staff account.
+            Sign in with an administrator or shop owner account.
           </p>
 
           <label>
@@ -78,6 +77,22 @@
             Sign In
           </button>
 
+        </form>
+      </section>
+
+      <section id="shopSelectionView" class="login-shell hidden">
+        <form id="shopSelectionForm" class="card login-card">
+          <div class="brand-mark" aria-hidden="true">MSK</div>
+          <h1>Select a Shop</h1>
+          <p class="muted">Choose the active shop this Print Agent will serve.</p>
+          <label>
+            Shop
+            <select id="agentShop" required></select>
+          </label>
+          <p id="shopSelectionError" class="alert error hidden" role="alert"></p>
+          <button id="selectShopButton" class="button primary" type="submit">
+            Start Print Agent
+          </button>
         </form>
       </section>
 

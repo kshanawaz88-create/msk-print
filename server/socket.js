@@ -1,9 +1,11 @@
 const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const { Server } = require("socket.io");
 
 const PrintJob = require("./models/printJob");
 const Shop = require("./models/Shop");
+const User = require("./models/User");
 
 let io = null;
 
@@ -33,6 +35,32 @@ const publicOrderRoom = (jobId) =>
 
 const shopRoom = (shopId) =>
   `shop:${shopId}`;
+
+const authorizeShopRoom = async (socket, requestedShopId) => {
+  const token = typeof socket.handshake.auth?.token === "string"
+    ? socket.handshake.auth.token
+    : "";
+  if (!token) return false;
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
+    return false;
+  }
+  if (
+    decoded.scope !== "web" ||
+    !mongoose.isValidObjectId(decoded.id || decoded.userId)
+  ) {
+    return false;
+  }
+  const user = await User.findById(decoded.id || decoded.userId)
+    .select("role shopId isAvailable")
+    .lean();
+  if (!user || user.role === "customer") return false;
+  if (user.role === "staff" && user.isAvailable === false) return false;
+  if (user.role === "admin") return true;
+  return user.shopId?.toString() === requestedShopId;
+};
 
 const safeOrderPayload = (order) => {
   if (!order) {
@@ -126,11 +154,6 @@ const initializeSocket = (
   });
 
   io.on("connection", (socket) => {
-    console.log(
-      "🔌 Socket connected:",
-      socket.id
-    );
-
     /*
       Guest customer joins an order room using:
 
@@ -289,10 +312,6 @@ const initializeSocket = (
             safeOrderPayload(job)
           );
 
-          console.log(
-            "✅ Guest joined order room:",
-            job._id.toString()
-          );
         } catch (error) {
           console.error(
             "Socket public-order join error:",
@@ -313,13 +332,7 @@ const initializeSocket = (
       }
     );
 
-    /*
-      This shop room handler should only be used after
-      authenticated shop socket access is added.
-
-      For now it validates only the MongoDB ID and should
-      not be used for sensitive shop data.
-    */
+    // Shop rooms require a current web JWT and server-side role/shop lookup.
     socket.on(
       "join-shop",
       async (
@@ -351,9 +364,14 @@ const initializeSocket = (
           return;
         }
 
-        await socket.join(
-          shopRoom(shopId)
-        );
+        if (!(await authorizeShopRoom(socket, shopId))) {
+          if (typeof acknowledge === "function") {
+            acknowledge({ success: false, message: "Shop socket access denied" });
+          }
+          return;
+        }
+
+        await socket.join(shopRoom(shopId));
 
         if (
           typeof acknowledge ===
@@ -366,12 +384,6 @@ const initializeSocket = (
       }
     );
 
-    socket.on("disconnect", () => {
-      console.log(
-        "🔌 Socket disconnected:",
-        socket.id
-      );
-    });
   });
 
   return io;
@@ -385,6 +397,13 @@ const getSocket = () => {
   }
 
   return io;
+};
+
+const closeSocket = async () => {
+  if (!io) return;
+  const active = io;
+  io = null;
+  await new Promise((resolve) => active.close(resolve));
 };
 
 /*
@@ -404,35 +423,30 @@ const emitOrderUpdate = ({
   order,
 }) => {
   if (!io) {
-    console.log("⚠️ Socket.IO is not initialized");
+    if (process.env.NODE_ENV !== "test") {
+      console.warn("Socket.IO is not initialized");
+    }
     return;
   }
+
+  const payload = safeOrderPayload(order);
+  if (!payload?._id) return;
 
   if (orderToken) {
     const room = `public-order:${orderToken}`;
 
-    console.log(
-      "📡 Emitting customer order update:",
-      room
-    );
-
     io.to(room).emit(
       "order-updated",
-      order
+      payload
     );
   }
 
   if (shopId) {
     const shopRoom = `shop:${shopId}`;
 
-    console.log(
-      "📡 Emitting shop order update:",
-      shopRoom
-    );
-
     io.to(shopRoom).emit(
       "shop-order-updated",
-      order
+      payload
     );
   }
 };
@@ -440,6 +454,7 @@ const emitOrderUpdate = ({
 module.exports = {
   initializeSocket,
   getSocket,
+  closeSocket,
   emitOrderUpdate,
   safeOrderPayload,
 };

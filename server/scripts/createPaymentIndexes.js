@@ -40,6 +40,7 @@ const run = async () => {
     shopId: "$shopId",
     orderId: "$razorpayOrderId",
   });
+  await assertNoDuplicates("razorpayPaymentId", "$razorpayPaymentId");
 
   const collection = PrintJob.collection;
   await collection.createIndex(
@@ -60,6 +61,16 @@ const run = async () => {
       unique: true,
       partialFilterExpression: {
         razorpayOrderId: { $type: "string", $gt: "" },
+      },
+    }
+  );
+  await collection.createIndex(
+    { razorpayPaymentId: 1 },
+    {
+      name: "razorpayPaymentId_unique_nonempty",
+      unique: true,
+      partialFilterExpression: {
+        razorpayPaymentId: { $type: "string", $gt: "" },
       },
     }
   );

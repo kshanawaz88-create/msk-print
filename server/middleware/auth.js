@@ -25,6 +25,12 @@ const protect = async (req, res, next) => {
   let decoded;
   try {
     decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.scope && decoded.scope !== "web") {
+      return res.status(401).json({
+        success: false,
+        message: "This token cannot access the web API. Please log in again",
+      });
+    }
     if (authDebug) {
       console.debug("JWT verification succeeded:", {
         userIdPresent: Boolean(decoded.id || decoded.userId),
@@ -59,7 +65,11 @@ const protect = async (req, res, next) => {
       return res.status(401).json({ success: false, message: "Account no longer exists" });
     }
     if (user.role === "staff" && user.isAvailable === false) {
-      return res.status(403).json({ success: false, message: "Staff account is inactive" });
+      return res.status(403).json({
+        success: false,
+        code: "ACCOUNT_INACTIVE",
+        message: "Staff account is inactive",
+      });
     }
 
     req.user = {

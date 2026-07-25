@@ -9,88 +9,119 @@ import { QRCodeSVG } from "qrcode.react";
 
 import API from "../Services/Api";
 import Navbar from "../components/Navbar";
+import { getStoredUser } from "../Services/session";
+
+const normalizedId = (value) =>
+  typeof value === "object" ? value?._id || value?.id || "" : value || "";
+
+const escapeHtml = (value) =>
+  String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;",
+  }[character]));
 
 function QRCodePage() {
   const qrWrapperRef = useRef(null);
 
   const [shop, setShop] = useState(null);
+  const [availableShops, setAvailableShops] = useState([]);
+  const [selectedShopId, setSelectedShopId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  const user = getStoredUser();
+  const userRole = user?.role || "";
+  const userShopId = normalizedId(user?.shopId);
+
   useEffect(() => {
     let active = true;
 
-    const loadShop = async () => {
+    const resolveShop = async () => {
       try {
         setLoading(true);
         setError("");
 
-        const storedUser = JSON.parse(
-          localStorage.getItem("user") || "null"
-        );
-
-        let shopId = storedUser?.shopId || null;
-
-        if (storedUser?.role === "admin" && !shopId) {
+        if (userRole === "admin") {
           const shopsResponse = await API.get("/api/shops");
-
-          const activeShops = (
-            shopsResponse.data?.shops || []
+          const activeShops = (Array.isArray(shopsResponse.data?.shops)
+            ? shopsResponse.data.shops
+            : []
           ).filter((item) => item.isActive !== false);
 
           if (activeShops.length === 0) {
-            throw new Error(
-              "No active shop is available."
-            );
+            throw new Error("No active shop is available.");
           }
 
-          shopId = activeShops[0]._id;
-        }
-
-        if (!shopId) {
-          throw new Error(
-            "Your account is not connected to a shop."
+          if (!active) return;
+          setAvailableShops(activeShops);
+          setSelectedShopId((current) =>
+            activeShops.some((item) => item._id === current)
+              ? current
+              : activeShops[0]._id
           );
+          return;
         }
 
-        const response = await API.get(
-          `/api/shops/${encodeURIComponent(shopId)}`
-        );
-
+        if (!userShopId) {
+          throw new Error("Your account is not connected to a shop.");
+        }
+        setSelectedShopId(userShopId);
+      } catch (requestError) {
         if (!active) return;
+        setError(
+          requestError.response?.data?.message ||
+            requestError.message ||
+            "Unable to load shop QR code."
+        );
+        setLoading(false);
+      }
+    };
 
-        const shopData =
-          response.data?.shop || response.data;
+    resolveShop();
 
-        if (!shopData?.shopCode) {
-          throw new Error(
-            "This shop does not have a shop code."
-          );
-        }
+    return () => {
+      active = false;
+    };
+  }, [userRole, userShopId]);
 
+  useEffect(() => {
+    if (!selectedShopId) return undefined;
+    let active = true;
+
+    const loadSelectedShop = async () => {
+      try {
+        setLoading(true);
+        setError("");
+        setMessage("");
+        const response = await API.get(
+          `/api/shops/${encodeURIComponent(selectedShopId)}`
+        );
+        if (!active) return;
+        const shopData = response.data?.shop || response.data;
+        if (!shopData?.shopCode) throw new Error("This shop does not have a shop code.");
         setShop(shopData);
       } catch (requestError) {
         if (!active) return;
-
+        setShop(null);
         setError(
           requestError.response?.data?.message ||
             requestError.message ||
             "Unable to load shop QR code."
         );
       } finally {
-        if (active) {
-          setLoading(false);
-        }
+        if (active) setLoading(false);
       }
     };
 
-    loadShop();
-
+    loadSelectedShop();
     return () => {
       active = false;
     };
-  }, []);
+  }, [selectedShopId]);
 
   const publicShopUrl = useMemo(() => {
     if (!shop?.shopCode) return "";
@@ -176,9 +207,8 @@ function QRCodePage() {
         document.createElement("a");
 
       downloadLink.href = pngUrl;
-      downloadLink.download = `${
-        shop.shopCode || "shop"
-      }-qr-code.png`;
+      const safeCode = String(shop.shopCode || "shop").replace(/[^a-zA-Z0-9_-]/g, "-");
+      downloadLink.download = `${safeCode}-qr-code.png`;
 
       document.body.appendChild(downloadLink);
       downloadLink.click();
@@ -207,6 +237,8 @@ function QRCodePage() {
       return;
     }
 
+    printWindow.opener = null;
+
     const svg =
       qrWrapperRef.current?.querySelector("svg");
 
@@ -214,11 +246,17 @@ function QRCodePage() {
       ? new XMLSerializer().serializeToString(svg)
       : "";
 
+    const safeShopName = escapeHtml(shop.shopName);
+    const safeShopCode = escapeHtml(shop.shopCode);
+    const safePublicShopUrl = escapeHtml(publicShopUrl);
+
     printWindow.document.write(`
       <!doctype html>
       <html>
         <head>
-          <title>${shop.shopName} QR Poster</title>
+          <meta charset="utf-8" />
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:" />
+          <title>${safeShopName} QR Poster</title>
 
           <style>
             * {
@@ -314,11 +352,11 @@ function QRCodePage() {
             </div>
 
             <div class="shop-name">
-              ${shop.shopName}
+              ${safeShopName}
             </div>
 
             <div class="shop-code">
-              Shop Code: ${shop.shopCode}
+              Shop Code: ${safeShopCode}
             </div>
 
             <div class="steps">
@@ -329,20 +367,17 @@ function QRCodePage() {
             </div>
 
             <div class="link">
-              ${publicShopUrl}
+              ${safePublicShopUrl}
             </div>
           </div>
 
-          <script>
-            window.onload = function () {
-              window.print();
-            };
-          </script>
         </body>
       </html>
     `);
 
     printWindow.document.close();
+    printWindow.focus();
+    window.setTimeout(() => printWindow.print(), 250);
   };
 
   if (loading) {
@@ -408,6 +443,26 @@ function QRCodePage() {
                   {error && (
                     <div className="alert alert-danger">
                       {error}
+                    </div>
+                  )}
+
+                  {userRole === "admin" && availableShops.length > 1 && (
+                    <div className="mb-4">
+                      <label className="form-label" htmlFor="qrShopSelection">
+                        Shop
+                      </label>
+                      <select
+                        id="qrShopSelection"
+                        className="form-select"
+                        value={selectedShopId}
+                        onChange={(event) => setSelectedShopId(event.target.value)}
+                      >
+                        {availableShops.map((item) => (
+                          <option key={item._id} value={item._id}>
+                            {item.shopName}{item.branchName ? ` - ${item.branchName}` : ""}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   )}
 

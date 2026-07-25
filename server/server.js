@@ -1,159 +1,91 @@
 require("dotenv").config();
 
-const express = require("express");
-const cors = require("cors");
+const http = require("node:http");
+const mongoose = require("mongoose");
 
+const { createApp, getAllowedOrigins } = require("./app");
 const connectDB = require("./config/db");
-
-const printRoutes = require("./routes/printRoutes");
-const authRoutes = require("./routes/authRoutes");
-const paymentRoutes = require("./routes/paymentRoutes");
-const shopSettingsRoutes = require("./routes/shopSettingsRoutes");
-const shopRoutes = require("./routes/shopRoutes");
-const userRoutes = require("./routes/userRoutes");
-const agentRoutes = require("./routes/agentRoutes");
-const printAgentQueueRoutes = require("./routes/printAgentQueueRoutes");
-const publicRoutes = require("./routes/publicRoutes");
-const publicPaymentRoutes =
-  require("./routes/publicPaymentRoutes");
-  const http = require("http");
-
+const { initializeSocket, closeSocket } = require("./socket");
 const {
-  initializeSocket,
-} = require("./socket");
-
-const app = express();
-const httpServer =
-  http.createServer(app);
-
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "http://172.30.144.1:3000",
-  process.env.CLIENT_URL,
-].filter(Boolean);
-const corsOptions = {
-  origin(origin, callback) {
-    // Allow tools such as Postman and same-machine server requests.
-    if (!origin) {
-      return callback(null, true);
-    }
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-
-    return callback(new Error(`Origin not allowed by CORS: ${origin}`));
-  },
-
-  credentials: true,
-
-  methods: [
-    "GET",
-    "POST",
-    "PUT",
-    "PATCH",
-    "DELETE",
-    "OPTIONS",
-  ],
-
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-  ],
-};
-
-// CORS must be registered before routes.
-app.use(cors(corsOptions));
-
-// Handle browser preflight requests.
-app.options(/.*/, cors(corsOptions));
-
-app.use(express.json({ limit: "2mb" }));
-
-// Health route
-app.get("/api/test", (req, res) => {
-  res.json({
-    success: true,
-    message: "Backend Connected Successfully!",
-  });
-});
-// API routes
-
-app.use("/api/print/queue", printAgentQueueRoutes);
-app.use("/api/public", publicRoutes);
-app.use("/api/agent", agentRoutes);
-app.use("/api/print", printRoutes);
-app.use("/api/auth", authRoutes);
-app.use("/api/payment", paymentRoutes);
-app.use("/api/settings", shopSettingsRoutes);
-app.use("/api/shops", shopRoutes);
-app.use("/api/users", userRoutes);
-app.use(
-  "/api/public/payment",
-  publicPaymentRoutes
-);
-
-// ADD THIS
-app.use((req, res, next) => {
-  console.log("➡️", req.method, req.originalUrl);
-  next();
-});
-
-// JSON 404 response
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Route not found: ${req.method} ${req.originalUrl}`,
-  });
-});
-
-// Error handler
-app.use((error, req, res, next) => {
-  console.error("Server error:", error.message);
-
-  if (error.message?.startsWith("Origin not allowed by CORS")) {
-    return res.status(403).json({
-      success: false,
-      message: error.message,
-    });
-  }
-
-  return res.status(500).json({
-    success: false,
-    message: "Internal server error",
-  });
-});
+  assertShopPaymentEncryptionConfigured,
+} = require("./utils/shopPaymentEncryption");
 
 const PORT = Number(process.env.PORT) || 5000;
 
-const startServer = async () => {
-  try {
-    await connectDB();
-
-    initializeSocket(
-  httpServer,
-  allowedOrigins
-);
-
-httpServer.listen(PORT, () => {
-      console.log(
-        `🚀 Server running on http://localhost:${PORT}`
-      );
-
-      console.log(
-        "✅ Allowed CORS origins:",
-        allowedOrigins.join(", ")
-      );
-    });
-  } catch (error) {
-    console.error(
-      "❌ Server startup failed:",
-      error.message
+const validateEnvironment = () => {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
+    throw new Error("JWT_SECRET must be configured with at least 16 characters");
+  }
+  assertShopPaymentEncryptionConfigured();
+  if (process.env.NODE_ENV === "production") {
+    if (!process.env.CLIENT_URL) {
+      throw new Error("CLIENT_URL must be configured in production");
+    }
+    const insecureOrigins = getAllowedOrigins().filter(
+      (origin) => !origin.startsWith("https://")
     );
-
-    process.exit(1);
+    if (insecureOrigins.length && process.env.ALLOW_INSECURE_CLIENT_URL !== "true") {
+      throw new Error(
+        "Production CLIENT_URL values must use HTTPS (or explicitly set ALLOW_INSECURE_CLIENT_URL=true)"
+      );
+    }
+  }
+  if (
+    process.env.RAZORPAY_PLATFORM_FALLBACK_ENABLED &&
+    !["true", "false"].includes(process.env.RAZORPAY_PLATFORM_FALLBACK_ENABLED)
+  ) {
+    throw new Error("RAZORPAY_PLATFORM_FALLBACK_ENABLED must be true or false");
+  }
+  if (
+    process.env.RAZORPAY_PLATFORM_FALLBACK_ENABLED === "true" &&
+    (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET)
+  ) {
+    throw new Error(
+      "RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required when platform fallback is enabled"
+    );
   }
 };
 
-startServer();
+const startServer = async () => {
+  validateEnvironment();
+  await connectDB();
+
+  const app = createApp();
+  const httpServer = http.createServer(app);
+  initializeSocket(httpServer, getAllowedOrigins());
+
+  await new Promise((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.listen(PORT, () => {
+      httpServer.off("error", reject);
+      console.log(`Server running on http://localhost:${PORT}`);
+      resolve();
+    });
+  });
+
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received; shutting down`);
+    const forceTimer = setTimeout(() => process.exit(1), 10_000);
+    forceTimer.unref();
+    await closeSocket();
+    await new Promise((resolve) => httpServer.close(resolve));
+    await mongoose.connection.close();
+    clearTimeout(forceTimer);
+  };
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+
+  return { app, httpServer, shutdown };
+};
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error("Server startup failed:", error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { startServer, validateEnvironment };
