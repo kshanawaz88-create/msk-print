@@ -255,23 +255,84 @@ class PrinterService {
   }
 
   async printJob(filePath, job, settings = {}) {
+    const printerName = this.resolvePrinter(job, settings);
+    if (!printerName) {
+      throw new PrinterError("Select a printer before printing.", {
+        code: "PRINTER_NOT_CONFIGURED",
+      });
+    }
+
+    const readiness = await this.isPrinterReady(printerName);
+    if (!readiness.ready) {
+      const status = readiness.status || "Unavailable";
+      const code = readiness.printer?.paperOut
+        ? "PAPER_OUT"
+        : readiness.printer
+          ? "PRINTER_OFFLINE"
+          : "PRINTER_NOT_FOUND";
+      throw new PrinterError(`Printer is not ready: ${status}.`, {
+        code,
+        printerName,
+      });
+    }
+
+    const baselineJobs = await this.getSpoolJobs(printerName);
+    const baselineIds = new Set(baselineJobs.map((entry) => Number(entry.id)));
+    const active = {
+      printerName,
+      spoolJobIds: [],
+      cancelRequested: false,
+      discoveryAborted: false,
+    };
+    const options = this.buildPrintOptions(job, settings, printerName);
+    this.current = active;
+
     await this.logger?.info("print-submitting", {
       jobId: job.id || job._id,
-      printerName: "Test Printer",
+      printerName,
     });
 
-    await this.sleep(2000);
+    try {
+      try {
+        await this._pdf().print(filePath, options);
+      } catch (error) {
+        throw new PrinterError("Unable to submit the document to Windows.", {
+          code: "PRINT_SUBMISSION_FAILED",
+          printerName,
+          cause: error,
+        });
+      }
 
-    await this.logger?.info("print-success", {
-      jobId: job.id || job._id,
-      printerName: "Test Printer",
-    });
+      const discovered = await this._discoverSpoolJobs(
+        printerName,
+        baselineIds,
+        active
+      );
+      active.spoolJobIds = discovered.map((entry) => Number(entry.id));
+      if (!active.spoolJobIds.length) {
+        throw new AmbiguousPrintError(
+          "Windows accepted the print request but no spool job could be confirmed.",
+          { printerName, code: "SPOOL_JOB_NOT_FOUND" }
+        );
+      }
 
-    return {
-      success: true,
-      printerName: "Test Printer",
-      spoolJobIds: [],
-    };
+      await this._waitForSpoolCompletion(active);
+
+      await this.logger?.info("print-success", {
+        jobId: job.id || job._id,
+        printerName,
+        spoolJobIds: active.spoolJobIds,
+      });
+
+      return {
+        success: true,
+        printerName,
+        spoolJobIds: [...active.spoolJobIds],
+      };
+    } finally {
+      active.discoveryAborted = true;
+      if (this.current === active) this.current = null;
+    }
   }
 
   async cancelCurrent() {
@@ -301,21 +362,6 @@ class PrinterService {
       cancelled: true,
       cancelledJobIds,
     };
-  }
-
-  async cancelCurrent() {
-    if (!this.current) {
-      return { cancelled: false, reason: "NO_ACTIVE_PRINT" };
-    }
-    this.current.cancelRequested = true;
-    if (!this.current.spoolJobIds.length) {
-      return { cancelled: true, pendingSpoolDiscovery: true };
-    }
-    const cancelledJobIds = await this._cancelSpoolJobs(
-      this.current.printerName,
-      this.current.spoolJobIds
-    );
-    return { cancelled: true, cancelledJobIds };
   }
 
   async getSpoolJobs(printerName) {
