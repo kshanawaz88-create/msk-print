@@ -4,15 +4,15 @@ function FAQ() {
   const faqs = [
     {
       question: "Which file formats are supported?",
-      answer: "You can upload PDF, DOC, DOCX, JPG, JPEG and PNG files.",
+      answer: "You can upload PDF, JPG, JPEG and PNG files up to the displayed upload limit.",
     },
     {
       question: "How do I pay?",
-      answer: "You can pay securely online before your print job is processed.",
+      answer: "Depending on the shop, you can use Razorpay, submit a UPI reference for verification, or pay cash at the shop.",
     },
     {
       question: "How will I know my order is ready?",
-      answer: "You'll receive email notifications whenever your order status changes.",
+      answer: "Open My Orders after login, or keep the private tracking link for a guest order.",
     },
     {
       question: "Can I print in color?",

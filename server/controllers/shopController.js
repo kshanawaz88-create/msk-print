@@ -31,7 +31,7 @@ exports.getAllShops = async (req, res) => {
     });
 
   } catch (error) {
-    console.log(error);
+    console.error("Shop list failed:", error.message);
 
     res.status(500).json({
       success: false,
@@ -85,7 +85,7 @@ exports.getShop = async (req, res) => {
     });
 
   } catch (error) {
-    console.log(error);
+    console.error("Shop lookup failed:", error.message);
 
     res.status(500).json({
       success: false,
@@ -136,11 +136,15 @@ exports.createShop = async (req, res) => {
     if (shopOwner && !mongoose.isValidObjectId(shopOwner)) {
       return res.status(400).json({ success: false, message: "Invalid shop owner ID" });
     }
-    if (shopOwner && !(await User.exists({ _id: shopOwner }))) {
-      return res.status(400).json({ success: false, message: "Shop owner account not found" });
+    if (shopOwner && !(await User.exists({
+      _id: shopOwner,
+      role: { $in: ["customer", "shopOwner"] },
+    }))) {
+      return res.status(400).json({
+        success: false,
+        message: "Select a customer or shop-owner account as the owner",
+      });
     }
-
-    const shopCode = `MSK${Date.now().toString().slice(-9)}`;
 
     // Create Shop
     const shop = await Shop.create({
@@ -157,8 +161,6 @@ exports.createShop = async (req, res) => {
 
       subscriptionPlan:
         subscriptionPlan || "Free",
-
-      shopCode,
 
       shopOwner: shopOwner || null,
     });
@@ -179,7 +181,7 @@ exports.createShop = async (req, res) => {
 
   } catch (error) {
 
-    console.log(error);
+    console.error("Shop creation failed:", error.message);
 
     res.status(500).json({
       success: false,
@@ -241,7 +243,7 @@ exports.updateShop = async (req, res) => {
 
   } catch (error) {
 
-    console.log(error);
+    console.error("Shop update failed:", error.message);
 
     res.status(500).json({
       success: false,
@@ -294,7 +296,7 @@ exports.deleteShop = async (req, res) => {
 
   } catch (error) {
 
-    console.log(error);
+    console.error("Shop deletion failed:", error.message);
 
     res.status(500).json({
       success: false,

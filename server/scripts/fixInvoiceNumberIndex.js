@@ -3,6 +3,11 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 
 const migrate = async () => {
+  if (process.env.CONFIRM_INVOICE_INDEX_MIGRATION !== "yes") {
+    throw new Error(
+      "Index migration not confirmed. Back up MongoDB, then set CONFIRM_INVOICE_INDEX_MIGRATION=yes"
+    );
+  }
   if (!process.env.MONGODB_URI) {
     throw new Error("MONGODB_URI is not configured");
   }

@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const path = require("node:path");
 const express = require("express");
 const multer = require("multer");
 const pdfParse = require("pdf-parse");
@@ -13,8 +14,12 @@ const paymentService = require(
 );
 
 const router = express.Router();
-
-console.log("✅ publicRoutes.js loaded");
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const ALLOWED_FILE_TYPES = new Map([
+  ["application/pdf", new Set([".pdf"])],
+  ["image/png", new Set([".png"])],
+  ["image/jpeg", new Set([".jpg", ".jpeg"])],
+]);
 
 // ======================================================
 // Upload configuration
@@ -24,17 +29,11 @@ const upload = multer({
   storage: multer.memoryStorage(),
 
   limits: {
-    fileSize: 20 * 1024 * 1024,
+    fileSize: MAX_UPLOAD_BYTES,
   },
 
   fileFilter: (_req, file, callback) => {
-    const allowedTypes = [
-      "application/pdf",
-      "image/png",
-      "image/jpeg",
-    ];
-
-    if (!allowedTypes.includes(file.mimetype)) {
+    if (!ALLOWED_FILE_TYPES.has(String(file.mimetype || "").toLowerCase())) {
       return callback(
         new Error(
           "Only PDF, PNG and JPG files are supported"
@@ -52,11 +51,17 @@ const parseUpload = (req, res, next) => {
       return next();
     }
 
-    const message =
+    let message = "Invalid upload request";
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      message = "File size cannot exceed 20 MB";
+    } else if (
       error instanceof multer.MulterError &&
-      error.code === "LIMIT_FILE_SIZE"
-        ? "File size cannot exceed 20 MB"
-        : error.message || "Invalid upload request";
+      ["LIMIT_UNEXPECTED_FILE", "LIMIT_FILE_COUNT"].includes(error.code)
+    ) {
+      message = "Upload exactly one file using the file field";
+    } else if (error.message === "Only PDF, PNG and JPG files are supported") {
+      message = error.message;
+    }
 
     return res.status(400).json({
       success: false,
@@ -106,19 +111,116 @@ const hashPublicOrderToken = (token) =>
     .update(token)
     .digest("hex");
 
+const publicInputError = (message) => {
+  const error = new Error(message);
+  error.status = 400;
+  error.expose = true;
+  return error;
+};
+
+const safeOrderFailure = (error, stage) => {
+  if (error?.expose === true && Number(error.status) < 500) {
+    return { status: error.status || 400, message: error.message };
+  }
+  if (stage === "page-count") {
+    return { status: 400, message: "The PDF could not be read or has no printable pages" };
+  }
+  if (stage === "price-calculation") {
+    return { status: 503, message: "Pricing is temporarily unavailable for this shop" };
+  }
+  if (stage === "shop-lookup") {
+    return { status: 503, message: "This shop is temporarily unavailable" };
+  }
+  if (stage === "cloudinary-upload") {
+    return { status: 502, message: "Unable to store the uploaded file. Please try again" };
+  }
+  if (stage === "print-job-create") {
+    return { status: 500, message: "Unable to create the print order. Please try again" };
+  }
+  return { status: 400, message: "Invalid print order request" };
+};
+
+const logPublicOrderFailure = (error, context) => {
+  const details = {
+    ...context,
+    name: error?.name || "Error",
+    code: error?.code || error?.http_code || undefined,
+  };
+  if (process.env.NODE_ENV !== "production") details.message = error?.message;
+  console.error("Public order creation failed:", details);
+};
+
+const detectFileType = (buffer) => {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return null;
+
+  if (
+    buffer.length >= 24 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    ) &&
+    buffer.subarray(12, 16).equals(Buffer.from("IHDR")) &&
+    buffer.readUInt32BE(16) > 0 &&
+    buffer.readUInt32BE(20) > 0
+  ) {
+    return "image/png";
+  }
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff &&
+    buffer.length >= 4 &&
+    buffer[buffer.length - 2] === 0xff &&
+    buffer[buffer.length - 1] === 0xd9
+  ) {
+    return "image/jpeg";
+  }
+
+  if (
+    buffer.length >= 5 &&
+    buffer.subarray(0, Math.min(buffer.length, 1024)).includes(Buffer.from("%PDF-"))
+  ) {
+    return "application/pdf";
+  }
+
+  return null;
+};
+
+const validateUploadedFile = (file) => {
+  if (!file || !Buffer.isBuffer(file.buffer) || file.buffer.length === 0) {
+    throw publicInputError("Please select a PDF, PNG or JPG file");
+  }
+  if (file.buffer.length > MAX_UPLOAD_BYTES) {
+    throw publicInputError("File size cannot exceed 20 MB");
+  }
+
+  const detectedType = detectFileType(file.buffer);
+  const declaredType = String(file.mimetype || "").toLowerCase();
+  if (!detectedType || detectedType !== declaredType) {
+    throw publicInputError(
+      "The file content does not match a supported PDF, PNG or JPG file"
+    );
+  }
+
+  const fileName = sanitizeFileName(file.originalname);
+  const extension = path.extname(fileName).toLowerCase();
+  if (!ALLOWED_FILE_TYPES.get(detectedType)?.has(extension)) {
+    throw publicInputError("The file extension does not match its content");
+  }
+
+  return { detectedType, fileName };
+};
+
 const uploadToCloudinary = (file) =>
   new Promise((resolve, reject) => {
-    const safeName = sanitizeFileName(
-      file.originalname
-    ).replace(/\s+/g, "_");
-
     const stream =
       cloudinary.uploader.upload_stream(
         {
           folder: "msk-print",
           resource_type: "raw",
           type: "authenticated",
-          public_id: `${Date.now()}-${safeName}`,
+          public_id: crypto.randomUUID(),
         },
         (error, result) => {
           if (error) {
@@ -160,7 +262,7 @@ const validatePrintOptions = (body) => {
     copies < 1 ||
     copies > 999
   ) {
-    throw new Error(
+    throw publicInputError(
       "Copies must be between 1 and 999"
     );
   }
@@ -174,7 +276,7 @@ const validatePrintOptions = (body) => {
       printType
     )
   ) {
-    throw new Error("Invalid print type");
+    throw publicInputError("Invalid print type");
   }
 
   if (
@@ -182,11 +284,11 @@ const validatePrintOptions = (body) => {
       side
     )
   ) {
-    throw new Error("Invalid printing side");
+    throw publicInputError("Invalid printing side");
   }
 
   if (!["A4", "A3"].includes(paperSize)) {
-    throw new Error("Invalid paper size");
+    throw publicInputError("Invalid paper size");
   }
 
   return {
@@ -194,6 +296,79 @@ const validatePrintOptions = (body) => {
     printType,
     side,
     paperSize,
+  };
+};
+
+const sanitizeGuestDetails = (body = {}) => {
+  const guestName = String(body.customerName || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (guestName.length > 100) {
+    throw publicInputError("Customer name cannot exceed 100 characters");
+  }
+
+  const rawMobile = String(body.mobileNumber || "").trim();
+  const guestMobile = rawMobile.replace(/[\s()-]/g, "");
+  if (guestMobile && !/^\+?[0-9]{7,15}$/.test(guestMobile)) {
+    throw publicInputError("Mobile number must contain 7 to 15 digits");
+  }
+
+  const guestEmail = String(body.email || "").trim().toLowerCase();
+  if (
+    guestEmail &&
+    (guestEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail))
+  ) {
+    throw publicInputError("Email address is invalid");
+  }
+
+  return { guestName, guestMobile, guestEmail };
+};
+
+const queueTrackingFor = async (job) => {
+  if (job.paymentStatus !== "Paid" || job.status !== "Pending") {
+    return { queuePosition: null, estimatedWaitMinutes: null };
+  }
+
+  const beforeThisOrder = {
+    shopId: job.shopId,
+    paymentStatus: "Paid",
+    status: "Pending",
+    $or: [
+      { createdAt: { $lt: job.createdAt } },
+      { createdAt: job.createdAt, _id: { $lt: job._id } },
+    ],
+  };
+  const [queuePosition, workload] = await Promise.all([
+    PrintJob.countDocuments(beforeThisOrder).then((count) => count + 1),
+    PrintJob.aggregate([
+      { $match: beforeThisOrder },
+      {
+        $group: {
+          _id: null,
+          units: {
+            $sum: {
+              $multiply: [
+                { $cond: [{ $gt: ["$pages", 0] }, "$pages", 1] },
+                { $cond: [{ $gt: ["$copies", 0] }, "$copies", 1] },
+              ],
+            },
+          },
+        },
+      },
+    ]),
+  ]);
+
+  const configuredMinutes = Number(process.env.PRINT_AGENT_MINUTES_PER_PAGE);
+  const minutesPerPage =
+    Number.isFinite(configuredMinutes) && configuredMinutes > 0 && configuredMinutes <= 60
+      ? configuredMinutes
+      : 0.1;
+  const unitsAhead = Number(workload[0]?.units) || 0;
+
+  return {
+    queuePosition,
+    estimatedWaitMinutes: Number((unitsAhead * minutesPerPage).toFixed(1)),
   };
 };
 
@@ -354,7 +529,8 @@ router.post(
       const calculated =
         await calculatePrice(
           pages,
-          options
+          options,
+          shop._id
         );
 
       return res.json({
@@ -369,11 +545,16 @@ router.post(
         },
       });
     } catch (error) {
-      return res.status(400).json({
+      if (error.status === 400 && error.expose !== false) {
+        return res.status(400).json({
+          success: false,
+          message: error.message,
+        });
+      }
+      logPublicOrderFailure(error, { stage: "public-quote" });
+      return res.status(503).json({
         success: false,
-        message:
-          error.message ||
-          "Unable to calculate price",
+        message: "Pricing is temporarily unavailable for this shop",
       });
     }
   }
@@ -389,11 +570,6 @@ router.post(
   uploadLimiter,
   parseUpload,
   async (req, res) => {
-    console.log("✅ ORDERS ROUTE HIT", {
-      shopCode: req.params.shopCode,
-      fileReceived: Boolean(req.file),
-    });
-
     let uploadedFile = null;
     let jobCreated = false;
     let stage = "request-validation";
@@ -437,6 +613,10 @@ router.post(
         });
       }
 
+      stage = "file-validation";
+      const validatedFile = validateUploadedFile(req.file);
+      const guestDetails = sanitizeGuestDetails(req.body);
+
       const options = validatePrintOptions(
         req.body
       );
@@ -446,7 +626,7 @@ router.post(
       let pages = 1;
 
       if (
-        req.file.mimetype ===
+        validatedFile.detectedType ===
         "application/pdf"
       ) {
         const parsedPdf = await pdfParse(
@@ -457,11 +637,10 @@ router.post(
 
         if (
           !Number.isInteger(pages) ||
-          pages < 1
+          pages < 1 ||
+          pages > 10000
         ) {
-          throw new Error(
-            "Unable to determine PDF page count"
-          );
+          throw publicInputError("PDF page count must be between 1 and 10000");
         }
       }
 
@@ -470,7 +649,8 @@ router.post(
       const calculated =
         await calculatePrice(
           pages,
-          options
+          options,
+          shop._id
         );
 
       const publicOrderToken =
@@ -488,12 +668,20 @@ router.post(
           req.file
         );
 
+      if (!uploadedFile?.public_id || !uploadedFile?.secure_url) {
+        const storageError = new Error("Storage provider returned an incomplete upload result");
+        storageError.code = "INCOMPLETE_UPLOAD_RESULT";
+        throw storageError;
+      }
+
       stage = "print-job-create";
 
       const job = await PrintJob.create({
         shopId: shop._id,
         user: null,
         isGuestOrder: true,
+
+        ...guestDetails,
 
         publicOrderTokenHash,
 
@@ -502,9 +690,7 @@ router.post(
             7 * 24 * 60 * 60 * 1000
         ),
 
-        fileName: sanitizeFileName(
-          req.file.originalname
-        ),
+        fileName: validatedFile.fileName,
 
         filePath:
           uploadedFile.secure_url,
@@ -520,7 +706,7 @@ router.post(
           "authenticated",
 
         fileMimeType:
-          req.file.mimetype,
+          validatedFile.detectedType,
 
         fileSize:
           req.file.size,
@@ -566,6 +752,9 @@ router.post(
           paymentStatus:
             job.paymentStatus,
           status: job.status,
+          customer: {
+            name: job.guestName || "Guest Customer",
+          },
 
           shop: {
             id: shop._id,
@@ -584,34 +773,25 @@ router.post(
             uploadedFile
           );
         } catch (cleanupError) {
-          console.error(
-            "Public upload cleanup failed:",
-            cleanupError.message
-          );
+          console.error("Public upload cleanup failed:", {
+            code: cleanupError?.code || cleanupError?.http_code || undefined,
+          });
         }
       }
 
-      console.error(
-        "Public order creation failed:",
-        {
+      const failure = safeOrderFailure(error, stage);
+      if (failure.status >= 500) {
+        logPublicOrderFailure(error, {
           stage,
-          name: error.name,
-          message: error.message,
-          fileReceived:
-            Boolean(req.file),
-          cloudinaryCompleted:
-            Boolean(
-              uploadedFile?.secure_url
-            ),
+          fileReceived: Boolean(req.file),
+          cloudinaryCompleted: Boolean(uploadedFile?.secure_url),
           jobCreated,
-        }
-      );
+        });
+      }
 
-      return res.status(400).json({
+      return res.status(failure.status).json({
         success: false,
-        message:
-          error.message ||
-          "Unable to create print order",
+        message: failure.message,
         stage,
       });
     }
@@ -701,6 +881,7 @@ router.get(
         paymentService.buildPublicPaymentConfiguration(
           shop
         );
+      const queueTracking = await queueTrackingFor(job);
 
       return res.json({
         success: true,
@@ -718,11 +899,19 @@ router.get(
           paymentStatus: job.paymentStatus,
           paymentMethod: job.paymentMethod,
           status: job.status,
+          ...queueTracking,
           invoiceNumber:
             job.paymentStatus === "Paid"
               ? job.invoiceNumber || ""
               : "",
           createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+          printStartedAt: job.printStartedAt || null,
+          printCompletedAt: job.printCompletedAt || null,
+          errorReason: job.errorReason || "",
+          customer: {
+            name: job.guestName || "Guest Customer",
+          },
 
           shop: {
             id: shop._id,
@@ -739,33 +928,6 @@ router.get(
         },
 
         payment,
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-// ======================================================
-// Temporary diagnostic endpoint
-// Remove after testing
-// ======================================================
-
-router.get(
-  "/debug/shops",
-  async (_req, res, next) => {
-    try {
-      const shops = await Shop.find({})
-        .select(
-          "shopName shopCode isActive"
-        )
-        .lean();
-
-      return res.json({
-        success: true,
-        database: Shop.db.name,
-        count: shops.length,
-        shops,
       });
     } catch (error) {
       next(error);

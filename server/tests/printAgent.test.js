@@ -100,6 +100,11 @@ const loginAgent = async ({ shopId, email, password }) =>
     .post("/api/agent/login")
     .send({ shopId, email, password });
 
+const loginWeb = async (email, password) =>
+  request(app)
+    .post("/api/auth/login")
+    .send({ email, password });
+
 const loginOwner = async (actors, shop = actors.shopA) => {
   const response = await loginAgent({
     shopId: shop.shopCode,
@@ -204,6 +209,64 @@ test("admin and the matching shop owner can create scoped print-agent sessions",
   assert.equal(adminLogin.status, 200);
   assert.equal(adminLogin.body.user.role, "admin");
   assert.equal(adminLogin.body.shop.id, actors.shopB._id.toString());
+});
+
+test("web login exchanges for an owner shop and requires admin shop selection", async () => {
+  const actors = await createActors();
+
+  const ownerLogin = await loginWeb(actors.ownerA.email, SHOP_OWNER_PASSWORD);
+  assert.equal(ownerLogin.status, 200, JSON.stringify(ownerLogin.body));
+  assert.equal(ownerLogin.body.success, true);
+  assert.equal(typeof ownerLogin.body.token, "string");
+  assert.equal(ownerLogin.body.user.role, "shopOwner");
+  assert.equal(ownerLogin.body.user.password, undefined);
+  assert.equal(
+    jwt.verify(ownerLogin.body.token, process.env.JWT_SECRET).scope,
+    "web"
+  );
+
+  const ownerSession = await request(app)
+    .post("/api/agent/session")
+    .set(agentAuth(ownerLogin.body.token))
+    .send({});
+  assert.equal(ownerSession.status, 200, JSON.stringify(ownerSession.body));
+  assert.equal(ownerSession.body.shop.id, actors.shopA._id.toString());
+  assert.equal(
+    jwt.verify(ownerSession.body.token, process.env.JWT_SECRET, {
+      audience: "msk-print-agent",
+      issuer: "msk-print-cloud",
+    }).scope,
+    "print-agent"
+  );
+
+  const adminLogin = await loginWeb(actors.admin.email, ADMIN_PASSWORD);
+  assert.equal(adminLogin.status, 200);
+  const selectionRequired = await request(app)
+    .post("/api/agent/session")
+    .set(agentAuth(adminLogin.body.token))
+    .send({});
+  assert.equal(selectionRequired.status, 409);
+  assert.equal(selectionRequired.body.code, "SHOP_SELECTION_REQUIRED");
+  assert.equal(selectionRequired.body.shops.length, 2);
+  assert.equal(JSON.stringify(selectionRequired.body).includes("password"), false);
+
+  const selected = await request(app)
+    .post("/api/agent/session")
+    .set(agentAuth(adminLogin.body.token))
+    .send({ shopId: actors.shopB._id.toString() });
+  assert.equal(selected.status, 200, JSON.stringify(selected.body));
+  assert.equal(selected.body.shop.id, actors.shopB._id.toString());
+
+  const customerLogin = await loginWeb(
+    actors.customerA.email,
+    "customer-secret-12"
+  );
+  const customerSession = await request(app)
+    .post("/api/agent/session")
+    .set(agentAuth(customerLogin.body.token))
+    .send({});
+  assert.equal(customerSession.status, 403);
+  assert.match(customerSession.body.message, /administrators.*shop owners/i);
 });
 
 test("staff and customers cannot log in, and owners cannot select another shop", async () => {
@@ -354,6 +417,76 @@ test("concurrent claims are atomic and a retry with the winning token is idempot
   assert.equal(stored.printAttemptCount, 1);
 });
 
+test("only stale Pending claims are recoverable and Printing claims never expire", async () => {
+  const actors = await createActors();
+  const token = await loginOwner(actors);
+  const stale = await createJob({
+    shopId: actors.shopA._id,
+    user: actors.customerA._id,
+  });
+  const active = await createJob({
+    shopId: actors.shopA._id,
+    user: actors.customerA._id,
+  });
+  const printing = await createJob({
+    shopId: actors.shopA._id,
+    user: actors.customerA._id,
+    status: "Printing",
+  });
+  const oldHash = crypto.createHash("sha256").update(claimToken("j")).digest("hex");
+  const now = Date.now();
+  await PrintJob.updateOne({ _id: stale._id }, {
+    $set: {
+      printClaimHash: oldHash,
+      printAgentSessionId: "crashed-session",
+      printClaimedAt: new Date(now - 120_000),
+      printClaimExpiresAt: new Date(now - 60_000),
+      printAttemptCount: 1,
+    },
+  });
+  await PrintJob.updateMany({ _id: { $in: [active._id, printing._id] } }, {
+    $set: {
+      printClaimHash: oldHash,
+      printAgentSessionId: "active-session",
+      printClaimedAt: new Date(now),
+      printClaimExpiresAt: new Date(now + 60_000),
+      printAttemptCount: 1,
+    },
+  });
+
+  const recoveredToken = claimToken("k");
+  const recovered = await request(app)
+    .post("/api/print/queue/claim")
+    .set(agentAuth(token))
+    .set("X-Print-Claim", recoveredToken)
+    .send({ printJobId: stale._id.toString() });
+  assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+  assert.equal(recovered.body.job.printAttemptCount, 2);
+
+  await request(app)
+    .post("/api/print/queue/claim")
+    .set(agentAuth(token))
+    .set("X-Print-Claim", claimToken("l"))
+    .send({ printJobId: active._id.toString() })
+    .expect(409);
+  await request(app)
+    .post("/api/print/queue/claim")
+    .set(agentAuth(token))
+    .set("X-Print-Claim", claimToken("m"))
+    .send({ printJobId: printing._id.toString() })
+    .expect(409);
+
+  const stored = await PrintJob.findById(stale._id).select(
+    "+printClaimHash +printAttemptCount +printClaimExpiresAt"
+  );
+  assert.equal(stored.printAttemptCount, 2);
+  assert.equal(
+    stored.printClaimHash,
+    crypto.createHash("sha256").update(recoveredToken).digest("hex")
+  );
+  assert.ok(stored.printClaimExpiresAt > new Date());
+});
+
 test("start and complete callbacks are idempotent for the same claim", async () => {
   const actors = await createActors();
   const token = await loginOwner(actors);
@@ -455,6 +588,62 @@ test("file download requires both the scoped agent JWT and matching print claim"
       streamedJob.cloudinaryPublicId,
       job.cloudinaryPublicId
     );
+  } finally {
+    printFileService.streamPrintFile = originalStream;
+  }
+});
+
+test("claim operations are bound to the current scoped agent session", async () => {
+  const actors = await createActors();
+  const firstToken = await loginOwner(actors);
+  const secondLogin = await loginAgent({
+    shopId: actors.shopA.shopCode,
+    email: actors.ownerA.email,
+    password: SHOP_OWNER_PASSWORD,
+  });
+  assert.equal(secondLogin.status, 200);
+  const secondToken = secondLogin.body.token;
+  const job = await createJob({
+    shopId: actors.shopA._id,
+    user: actors.customerA._id,
+  });
+  const printClaim = claimToken("i");
+
+  await request(app)
+    .post("/api/print/queue/claim")
+    .set(agentAuth(firstToken))
+    .set("X-Print-Claim", printClaim)
+    .send({ printJobId: job._id.toString() })
+    .expect(200);
+
+  const originalStream = printFileService.streamPrintFile;
+  printFileService.streamPrintFile = async (_selectedJob, res) => {
+    res.type("application/pdf").send(Buffer.from("%PDF-session-test"));
+  };
+  try {
+    await request(app)
+      .get(`/api/print/queue/${job._id}/file`)
+      .set(agentAuth(secondToken))
+      .set("X-Print-Claim", printClaim)
+      .expect(403);
+
+    await request(app)
+      .post("/api/print/queue/claim")
+      .set(agentAuth(secondToken))
+      .set("X-Print-Claim", printClaim)
+      .send({ printJobId: job._id.toString() })
+      .expect(200);
+
+    await request(app)
+      .get(`/api/print/queue/${job._id}/file`)
+      .set(agentAuth(firstToken))
+      .set("X-Print-Claim", printClaim)
+      .expect(403);
+    await request(app)
+      .get(`/api/print/queue/${job._id}/file`)
+      .set(agentAuth(secondToken))
+      .set("X-Print-Claim", printClaim)
+      .expect(200);
   } finally {
     printFileService.streamPrintFile = originalStream;
   }

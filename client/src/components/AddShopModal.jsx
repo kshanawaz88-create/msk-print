@@ -41,7 +41,6 @@ function AddShopModal({ show, onClose, onSuccess }) {
       onSuccess();
       onClose();
     } catch (error) {
-      console.log(error);
       alert(error.response?.data?.message || "Unable to create shop");
     }
   };

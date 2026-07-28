@@ -4,7 +4,7 @@ const socketUrl =
   process.env.REACT_APP_API_URL ||
   "http://localhost:5000";
 
-const socket = io(socketUrl, {
+export const createTrackingSocket = () => io(socketUrl, {
   autoConnect: false,
   transports: [
     "websocket",
@@ -12,5 +12,7 @@ const socket = io(socketUrl, {
   ],
   withCredentials: true,
 });
+
+const socket = createTrackingSocket();
 
 export default socket;

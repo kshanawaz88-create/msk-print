@@ -1,13 +1,12 @@
 const express = require("express");
-const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const PrintJob = require("../models/printJob");
 const { protect } = require("../middleware/auth");
 const { calculatePrice } = require("../utils/pricing");
-const { createInvoiceNumber } = require("../utils/invoice");
 const { paymentLimiter, upiLimiter } = require("../middleware/rateLimits");
 const paymentService = require("../services/shopPaymentService");
+const paymentWorkflow = require("../services/paymentWorkflowService");
 
 const {
   validatePaymentOptions,
@@ -15,8 +14,6 @@ const {
   validateUpi,
   validateUpiDecision,
 } = require("../middleware/validate");
-
-const { emitOrderUpdate } = require("../socket");
 
 const router = express.Router();
 
@@ -56,45 +53,34 @@ const statusForError = (
     ? error.status
     : fallback;
 
+const logUnexpectedPaymentError = (label, error, context = {}) => {
+  if (Number.isInteger(error?.status) && error.status < 500) return;
+  console.error(label, { ...context, message: error?.message || "Unknown payment error" });
+};
+
 const safePaymentError = (
   res,
   error,
   fallbackMessage,
   fallbackStatus = 400
-) =>
-  res
-    .status(
-      statusForError(
-        error,
-        fallbackStatus
-      )
-    )
+) => {
+  if (error?.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: "This payment reference is already linked to another order",
+    });
+  }
+  const hasSafeStatus = Number.isInteger(error?.status);
+  const status = statusForError(error, fallbackStatus);
+  return res
+    .status(status)
     .json({
       success: false,
       message:
-        error.message ||
-        fallbackMessage,
+        hasSafeStatus && status < 500
+          ? error.message
+          : fallbackMessage,
     });
-
-const emitJobUpdate = (job) => {
-  if (!job?._id) {
-    return;
-  }
-
-  const safeOrder =
-    typeof job.toObject === "function"
-      ? job.toObject()
-      : job;
-
-  emitOrderUpdate({
-    orderToken:
-      job._id.toString(),
-
-    shopId:
-      job.shopId?.toString(),
-
-    order: safeOrder,
-  });
 };
 
 const assertPaymentMethodAvailable = (
@@ -289,7 +275,8 @@ router.post(
           job.pages,
           paymentOptions(
             req.body
-          )
+          ),
+          job.shopId
         );
 
       return res.json({
@@ -305,17 +292,9 @@ router.post(
         },
       });
     } catch (error) {
-      console.error(
-        "Price quote error:",
-        {
-          printJobId:
-            req.body
-              ?.printJobId,
-
-          message:
-            error.message,
-        }
-      );
+      logUnexpectedPaymentError("Price quote error:", error, {
+        printJobId: req.body?.printJobId,
+      });
 
       const clientError = [
         "Copies must",
@@ -375,16 +354,7 @@ router.post(
         });
       }
 
-      if (
-        job.paymentStatus === "Paid" ||
-        job.paymentStatus === "Refunded"
-      ) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "This payment is already finalized",
-        });
-      }
+      paymentWorkflow.assertPaymentCanStart(job, "Razorpay");
 
       const shop =
         await paymentService
@@ -397,184 +367,38 @@ router.post(
         "razorpay"
       );
 
-      const credentials =
-        paymentService
-          .resolveRazorpayCredentials(
-            shop
-          );
-
       const calculated =
         await calculatePrice(
           job.pages,
-          paymentOptions(req.body)
+          paymentOptions(req.body),
+          job.shopId
         );
-
-      const amount = Math.round(
-        calculated.price * 100
-      );
-
-      if (
-        !Number.isSafeInteger(amount) ||
-        amount < 100
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "The calculated payment amount is invalid",
-        });
-      }
-
-      if (
-        job.paymentMethod ===
-          "Razorpay" &&
-        job.razorpayOrderId &&
-        ["Pending", "Failed"].includes(
-          job.paymentStatus
-        )
-      ) {
-        const existingAmount =
-          Number(job.razorpayAmount) ||
-          Math.round(
-            Number(job.price) * 100
-          );
-
-        if (
-          existingAmount !== amount
-        ) {
-          return res.status(409).json({
-            success: false,
-            message:
-              "A Razorpay order already exists for different print options",
-          });
-        }
-
-        return res.json({
-          success: true,
-          keyId: credentials.keyId,
-
-          order: {
-            id: job.razorpayOrderId,
-            amount: existingAmount,
-            currency:
-              job.currency || "INR",
-            receipt: `MSK-${job._id}`,
-            status: "created",
-          },
-
-          quote: {
-            ...calculated,
-            currency: job.currency,
-          },
-
-          message:
-            "Existing Razorpay order returned",
-        });
-      }
-
-      const razorpayOrder =
-        await paymentService
-          .createRazorpayClient(
-            credentials
-          )
-          .orders.create({
-            amount,
-            currency: "INR",
-            receipt: `MSK-${job._id}`,
-
-            notes: {
-              shopId:
-                shop._id.toString(),
-
-              printJobId:
-                job._id.toString(),
-            },
-          });
-
-      Object.assign(
+      const result = await paymentWorkflow.createRazorpayOrder({
         job,
+        shop,
         calculated,
-        {
-          colorMode:
-            calculated.printType,
+        paymentService,
+      });
 
-          invoiceSubtotal:
-            calculated.breakdown
-              .subtotal,
-
-          invoiceGstRate:
-            calculated.breakdown
-              .gstPercent,
-
-          invoiceGstAmount:
-            calculated.breakdown
-              .gstAmount,
-
-          paymentMethod:
-            "Razorpay",
-
-          paymentStatus:
-            "Pending",
-
-          razorpayOrderId:
-            razorpayOrder.id,
-
-          razorpayAmount:
-            amount,
-
-          razorpayPaymentId: "",
-          razorpaySignature: "",
-          upiReference: "",
-
-          paymentVerifiedAt:
-            null,
-
-          paymentVerifiedBy:
-            null,
-
-          paymentNotes:
-            "Awaiting Razorpay signature verification",
-        }
-      );
-
-      await job.save();
-
-      return res.status(201).json({
+      return res.status(result.existing ? 200 : 201).json({
         success: true,
-        keyId: credentials.keyId,
-
-        order: {
-          id: razorpayOrder.id,
-          amount:
-            razorpayOrder.amount,
-          currency:
-            razorpayOrder.currency,
-          receipt:
-            razorpayOrder.receipt,
-          status:
-            razorpayOrder.status,
-        },
-
-        quote: {
-          ...calculated,
-          currency: job.currency,
-        },
+        keyId: result.keyId,
+        order: result.order,
+        quote: result.quote,
+        ...(result.existing
+          ? { message: "Existing Razorpay order returned" }
+          : {}),
       });
     } catch (error) {
-      console.error(
-        "Razorpay order error:",
-        {
-          printJobId:
-            req.body?.printJobId,
-
-          message:
-            error.message,
-        }
-      );
+      logUnexpectedPaymentError("Razorpay order error:", error, {
+        printJobId: req.body?.printJobId,
+      });
 
       return safePaymentError(
         res,
         error,
-        "Unable to create payment order"
+        "Unable to create payment order",
+        502
       );
     }
   }
@@ -612,28 +436,6 @@ router.post(
           success: false,
           message:
             "You cannot verify this order",
-        });
-      }
-
-      if (
-        job.paymentStatus === "Paid"
-      ) {
-        if (
-          job.razorpayPaymentId ===
-          razorpay_payment_id
-        ) {
-          return res.json({
-            success: true,
-            message:
-              "Payment was already verified",
-            job,
-          });
-        }
-
-        return res.status(409).json({
-          success: false,
-          message:
-            "This order is already paid",
         });
       }
 
@@ -685,27 +487,6 @@ router.post(
         });
       }
 
-      const duplicatePayment =
-        await PrintJob.exists({
-          _id: {
-            $ne: job._id,
-          },
-
-          razorpayPaymentId:
-            razorpay_payment_id,
-
-          paymentStatus:
-            "Paid",
-        });
-
-      if (duplicatePayment) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "This Razorpay payment is already linked to another order",
-        });
-      }
-
       const shop =
         await paymentService
           .findShopWithPaymentSecrets(
@@ -718,25 +499,12 @@ router.post(
             shop
           );
 
-      const expected = crypto
-        .createHmac(
-          "sha256",
-          keySecret
-        )
-        .update(
-          `${razorpay_order_id}|${razorpay_payment_id}`
-        )
-        .digest("hex");
-
-      const valid =
-        expected.length ===
-          razorpay_signature.length &&
-        crypto.timingSafeEqual(
-          Buffer.from(expected),
-          Buffer.from(
-            razorpay_signature
-          )
-        );
+      const valid = paymentWorkflow.verifyRazorpaySignature({
+        orderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+        signature: razorpay_signature,
+        keySecret,
+      });
 
       if (!valid) {
         return res.status(400).json({
@@ -746,52 +514,40 @@ router.post(
         });
       }
 
-      job.paymentStatus = "Paid";
-      job.paymentMethod = "Razorpay";
-      job.status = "Pending";
+      if (job.paymentStatus === "Paid") {
+        if (job.razorpayPaymentId !== razorpay_payment_id) {
+          return res.status(409).json({
+            success: false,
+            message: "This order is already paid",
+          });
+        }
+        return res.json({
+          success: true,
+          message: "Payment was already verified",
+          job,
+        });
+      }
 
-      job.razorpayPaymentId =
-        razorpay_payment_id;
-
-      job.razorpaySignature =
-        razorpay_signature;
-
-      job.paymentVerifiedAt =
-        new Date();
-
-      job.paymentVerifiedBy =
-        req.user.id;
-
-      job.invoiceNumber =
-        job.invoiceNumber ||
-        createInvoiceNumber(
-          job._id
-        );
-
-      job.paymentNotes =
-        "Razorpay signature verified by server";
-
-      await job.save();
-
-      emitJobUpdate(job);
+      const result = await paymentWorkflow.finalizeRazorpayPayment({
+        job,
+        paymentId: razorpay_payment_id,
+        signature: razorpay_signature,
+        verifiedBy: req.user.id,
+        note: job.status === "Cancelled"
+          ? "Razorpay signature verified for a cancelled order; manual refund review required"
+          : "Razorpay signature verified by server",
+      });
 
       return res.json({
         success: true,
         message:
           "Payment verified successfully",
-        job,
+        job: result.job,
       });
     } catch (error) {
-      console.error(
-        "Payment verification error:",
-        {
-          printJobId:
-            req.body?.printJobId,
-
-          message:
-            error.message,
-        }
-      );
+      logUnexpectedPaymentError("Payment verification error:", error, {
+        printJobId: req.body?.printJobId,
+      });
 
       return safePaymentError(
         res,
@@ -840,16 +596,7 @@ router.post(
         });
       }
 
-      if (
-        job.paymentStatus === "Paid" ||
-        job.paymentStatus === "Refunded"
-      ) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "This payment is already finalized",
-        });
-      }
+      paymentWorkflow.assertPaymentCanStart(job, "UPI");
 
       const shop =
         await paymentService
@@ -861,6 +608,37 @@ router.post(
         shop,
         "upi"
       );
+
+      if (job.paymentMethod === "UPI" && job.upiReference) {
+        if (job.paymentStatus === "Rejected") {
+          return res.status(409).json({
+            success: false,
+            message: "This UPI reference was rejected. Contact the shop before retrying payment.",
+          });
+        }
+        if (job.upiReference.toUpperCase() !== reference) {
+          return res.status(409).json({
+            success: false,
+            message: "A different UPI reference is already submitted for this order",
+          });
+        }
+        const existingQuote = await calculatePrice(
+          job.pages,
+          paymentOptions(req.body),
+          job.shopId
+        );
+        if (!paymentWorkflow.quoteMatchesJob(job, existingQuote)) {
+          return res.status(409).json({
+            success: false,
+            message: "Print options cannot change after a UPI reference is submitted",
+          });
+        }
+        return res.json({
+          success: true,
+          message: "UPI reference was already submitted for shop verification",
+          job,
+        });
+      }
 
       const reusedReference =
         await PrintJob.exists({
@@ -875,12 +653,6 @@ router.post(
             $options: "i",
           },
 
-          paymentStatus: {
-            $in: [
-              "Pending",
-              "Paid",
-            ],
-          },
         });
 
       if (reusedReference) {
@@ -894,55 +666,40 @@ router.post(
       const calculated =
         await calculatePrice(
           job.pages,
-          paymentOptions(req.body)
+          paymentOptions(req.body),
+          job.shopId
         );
 
-      Object.assign(
-        job,
-        calculated,
+      const updated = await PrintJob.findOneAndUpdate(
         {
-          colorMode:
-            calculated.printType,
-
-          invoiceSubtotal:
-            calculated.breakdown
-              .subtotal,
-
-          invoiceGstRate:
-            calculated.breakdown
-              .gstPercent,
-
-          invoiceGstAmount:
-            calculated.breakdown
-              .gstAmount,
-
-          paymentMethod: "UPI",
-          paymentStatus:
-            "Pending",
-
-          status: "Pending",
-
-          upiReference:
-            reference,
-
-          razorpayOrderId: "",
-          razorpayPaymentId: "",
-          razorpaySignature: "",
-
-          paymentVerifiedAt:
-            null,
-
-          paymentVerifiedBy:
-            null,
-
-          paymentNotes:
-            "UPI reference submitted; awaiting shop verification",
-        }
+          _id: job._id,
+          paymentStatus: { $nin: ["Paid", "Refunded"] },
+          paymentMethod: { $in: ["", null, "UPI"] },
+          upiReference: { $in: ["", null, reference] },
+        },
+        {
+          $set: {
+            ...paymentWorkflow.quoteFields(calculated),
+            paymentMethod: "UPI",
+            paymentStatus: "Pending",
+            upiReference: reference,
+            paymentVerifiedAt: null,
+            paymentVerifiedBy: null,
+            paymentNotes: "UPI reference submitted; awaiting shop verification",
+          },
+        },
+        { returnDocument: "after", runValidators: true }
       );
 
-      await job.save();
+      if (!updated) {
+        throw paymentWorkflow.workflowError(
+          "The payment method or UPI reference changed in another request",
+          409,
+          "PAYMENT_CONFLICT"
+        );
+      }
 
-      emitJobUpdate(job);
+      paymentWorkflow.emitPaymentUpdate(updated);
 
       return res.json({
         success: true,
@@ -950,7 +707,7 @@ router.post(
         message:
           "UPI reference submitted for shop verification",
 
-        job,
+        job: updated,
       });
     } catch (error) {
       return safePaymentError(
@@ -1020,55 +777,13 @@ router.patch(
         });
       }
 
-      if (
-        job.paymentStatus !==
-        "Pending"
-      ) {
-        return res.status(409).json({
-          success: false,
-
-          message:
-            "This UPI payment has already been reviewed",
-        });
-      }
-
-      job.paymentVerifiedAt =
-        new Date();
-
-      job.paymentVerifiedBy =
-        req.user.id;
-
-      if (
-        req.body.decision ===
-        "approve"
-      ) {
-        job.paymentStatus =
-          "Paid";
-
-        job.status =
-          "Pending";
-
-        job.invoiceNumber =
-          job.invoiceNumber ||
-          createInvoiceNumber(
-            job._id
-          );
-
-        job.paymentNotes =
-          req.body.notes?.trim() ||
-          "UPI payment approved";
-      } else {
-        job.paymentStatus =
-          "Rejected";
-
-        job.paymentNotes =
-          req.body.notes?.trim() ||
-          "UPI payment rejected";
-      }
-
-      await job.save();
-
-      emitJobUpdate(job);
+      const result = await paymentWorkflow.decideManualPayment({
+        job,
+        method: "UPI",
+        decision: req.body.decision,
+        actorId: req.user.id,
+        notes: req.body.notes,
+      });
 
       return res.json({
         success: true,
@@ -1079,7 +794,7 @@ router.patch(
             ? "UPI payment approved"
             : "UPI payment rejected",
 
-        job,
+        job: result.job,
       });
     } catch (error) {
       return safePaymentError(
@@ -1115,61 +830,82 @@ router.post(
         });
       }
 
-      if (
-        job.paymentStatus === "Paid" ||
-        job.paymentStatus === "Refunded"
-      ) {
+      paymentWorkflow.assertPaymentCanStart(job, "Cash");
+
+      const shop = await paymentService.findShopWithPaymentSecrets(job.shopId);
+      if (!shop || shop.isActive === false) {
+        return res.status(404).json({
+          success: false,
+          message: "The order's shop is unavailable",
+        });
+      }
+      if (shop.paymentEnabled === false) {
         return res.status(409).json({
           success: false,
-          message:
-            "This payment is already finalized",
+          message: "Payments are currently disabled for this shop",
         });
       }
 
       const calculated =
         await calculatePrice(
           job.pages,
-          paymentOptions(req.body)
+          paymentOptions(req.body),
+          job.shopId
         );
 
-      Object.assign(job, calculated, {
-        colorMode:
-          calculated.printType,
+      if (job.paymentMethod === "Cash") {
+        if (job.paymentStatus === "Rejected") {
+          return res.status(409).json({
+            success: false,
+            message: "This cash payment selection was rejected. Contact the shop before retrying.",
+          });
+        }
+        if (!paymentWorkflow.quoteMatchesJob(job, calculated)) {
+          return res.status(409).json({
+            success: false,
+            message: "Print options cannot change after cash payment is selected",
+          });
+        }
+        return res.json({
+          success: true,
+          message: "Cash payment was already selected. Pay at the shop counter.",
+          job,
+        });
+      }
 
-        invoiceSubtotal:
-          calculated.breakdown.subtotal,
+      const updated = await PrintJob.findOneAndUpdate(
+        {
+          _id: job._id,
+          paymentStatus: { $nin: ["Paid", "Refunded"] },
+          paymentMethod: { $in: ["", null] },
+        },
+        {
+          $set: {
+            ...paymentWorkflow.quoteFields(calculated),
+            paymentMethod: "Cash",
+            paymentStatus: "Pending",
+            paymentVerifiedAt: null,
+            paymentVerifiedBy: null,
+            paymentNotes: "Customer selected pay at shop",
+          },
+        },
+        { returnDocument: "after", runValidators: true }
+      );
+      if (!updated) {
+        throw paymentWorkflow.workflowError(
+          "The payment method changed in another request",
+          409,
+          "PAYMENT_CONFLICT"
+        );
+      }
 
-        invoiceGstRate:
-          calculated.breakdown.gstPercent,
-
-        invoiceGstAmount:
-          calculated.breakdown.gstAmount,
-
-        paymentMethod: "Cash",
-        paymentStatus: "Pending",
-        status: "Pending",
-
-        upiReference: "",
-        razorpayOrderId: "",
-        razorpayPaymentId: "",
-        razorpaySignature: "",
-
-        paymentVerifiedAt: null,
-        paymentVerifiedBy: null,
-
-        paymentNotes:
-          "Customer selected pay at shop",
-      });
-
-      await job.save();
-
-      emitJobUpdate(job);
+      paymentWorkflow.emitPaymentUpdate(updated);
 
       return res.json({
         success: true,
         message:
           "Cash payment selected. Pay at the shop counter.",
-        job,
+        job: updated,
       });
     } catch (error) {
       return safePaymentError(
@@ -1185,6 +921,18 @@ router.patch(
   protect,
   async (req, res) => {
     try {
+      const decision = req.body?.decision || "approve";
+      const notes = typeof req.body?.notes === "string" ? req.body.notes.trim() : "";
+      if (!validId(req.params.id)) {
+        return res.status(400).json({ success: false, message: "Invalid print job ID" });
+      }
+      if (!["approve", "reject"].includes(decision)) {
+        return res.status(400).json({ success: false, message: "Decision must be approve or reject" });
+      }
+      if (notes.length > 500) {
+        return res.status(400).json({ success: false, message: "Notes cannot exceed 500 characters" });
+      }
+
       if (
         ![
           "admin",
@@ -1235,42 +983,19 @@ router.patch(
         });
       }
 
-      if (
-        job.paymentStatus !== "Pending"
-      ) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "This cash payment has already been reviewed",
-        });
-      }
-
-      job.paymentStatus = "Paid";
-      job.status = "Pending";
-
-      job.paymentVerifiedAt =
-        new Date();
-
-      job.paymentVerifiedBy =
-        req.user.id;
-
-      job.invoiceNumber =
-        job.invoiceNumber ||
-        createInvoiceNumber(job._id);
-
-    job.paymentNotes =
-  req.body?.notes?.trim() ||
-  "Cash received at shop";
-
-      await job.save();
-
-      emitJobUpdate(job);
+      const result = await paymentWorkflow.decideManualPayment({
+        job,
+        method: "Cash",
+        decision,
+        actorId: req.user.id,
+        notes: notes || (decision === "approve" ? "Cash received at shop" : "Cash payment rejected"),
+      });
 
       return res.json({
         success: true,
         message:
-          "Cash payment confirmed",
-        job,
+          decision === "approve" ? "Cash payment confirmed" : "Cash payment rejected",
+        job: result.job,
       });
     } catch (error) {
       return safePaymentError(

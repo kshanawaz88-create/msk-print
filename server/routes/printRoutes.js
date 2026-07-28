@@ -1,4 +1,5 @@
 const express = require("express");
+const crypto = require("node:crypto");
 const multer = require("multer");
 const pdfParse = require("pdf-parse");
 const mongoose = require("mongoose");
@@ -11,6 +12,7 @@ const { protect } = require("../middleware/auth");
 const { calculatePrice } = require("../utils/pricing");
 const { uploadLimiter } = require("../middleware/rateLimits");
 const { validatePrintUpdate } = require("../middleware/validate");
+const { emitOrderUpdate } = require("../socket");
 
 const router = express.Router();
 const upload = multer({
@@ -40,6 +42,32 @@ const parseUpload = (req, res, next) => {
   });
 };
 
+const detectedMimeType = (buffer) => {
+  if (!Buffer.isBuffer(buffer)) return "";
+  if (buffer.subarray(0, 5).toString("ascii") === "%PDF-") {
+    return "application/pdf";
+  }
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  ) {
+    return "image/png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  return "";
+};
+
+const validateUploadContents = (file) => {
+  const actualType = detectedMimeType(file?.buffer);
+  if (!actualType || actualType !== file.mimetype) {
+    const error = new Error("File contents do not match a supported PDF, PNG, or JPG file");
+    error.isSafeUploadError = true;
+    throw error;
+  }
+};
+
 const uploadToCloudinary = (file) => new Promise((resolve, reject) => {
   const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
   const stream = cloudinary.uploader.upload_stream(
@@ -47,7 +75,7 @@ const uploadToCloudinary = (file) => new Promise((resolve, reject) => {
       folder: "msk-print",
       resource_type: "raw",
       type: "authenticated",
-      public_id: `${Date.now()}-${safeName}`,
+      public_id: `${crypto.randomUUID()}-${safeName}`,
     },
     (error, result) => error ? reject(error) : resolve(result)
   );
@@ -87,6 +115,18 @@ const paymentFields = [
   "paymentVerifiedBy",
   "invoiceNumber",
 ];
+const paidOnlyStatuses = new Set(["Printing", "Ready", "Completed"]);
+const paymentHasStarted = (job) => Boolean(
+  job.paymentMethod ||
+  job.razorpayOrderId ||
+  job.upiReference ||
+  job.paymentStatus !== "Pending"
+);
+const emitJobUpdate = (job) => emitOrderUpdate({
+  orderToken: job._id.toString(),
+  shopId: job.shopId?._id?.toString?.() || job.shopId?.toString?.(),
+  order: job,
+});
 
 router.post("/", uploadLimiter, protect, parseUpload, async (req, res) => {
   let uploadedFile = null;
@@ -111,6 +151,7 @@ router.post("/", uploadLimiter, protect, parseUpload, async (req, res) => {
         stage,
       });
     }
+    validateUploadContents(req.file);
 
     let pages = 1;
     if (req.file.mimetype === "application/pdf") {
@@ -181,6 +222,7 @@ router.post("/", uploadLimiter, protect, parseUpload, async (req, res) => {
       assignedStaff: req.user.role === "staff" ? req.user.id : null,
     });
     jobCreated = true;
+    emitJobUpdate(job);
     if (uploadDebug) {
       console.debug("Upload stage:", {
         stage,
@@ -216,9 +258,18 @@ router.post("/", uploadLimiter, protect, parseUpload, async (req, res) => {
       cloudinaryCompleted: Boolean(uploadedFile?.secure_url),
       jobCreated,
     });
+    const safeMessage = error.isSafeUploadError
+      ? error.message
+      : stage === "pdf-parse"
+      ? "Unable to read the uploaded PDF"
+      : stage === "cloudinary-upload"
+      ? "Unable to store the uploaded file"
+      : stage === "print-job-create"
+      ? "Unable to create the print order"
+      : "Upload failed";
     return res.status(400).json({
       success: false,
-      message: error.message || "Upload failed",
+      message: safeMessage,
       stage,
     });
   }
@@ -262,7 +313,7 @@ router.put("/:id", protect, validatePrintUpdate, async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ success: false, message: "Invalid order ID" });
     }
-    const job = await PrintJob.findById(req.params.id);
+    const job = await PrintJob.findById(req.params.id).select("+printClaimHash");
     if (!job) return res.status(404).json({ success: false, message: "Order not found" });
 
     const scopedJob = await populateJob(PrintJob.findById(job._id));
@@ -285,7 +336,7 @@ router.put("/:id", protect, validatePrintUpdate, async (req, res) => {
         printType: req.body.printType,
         side: req.body.side,
         paperSize: req.body.paperSize,
-      });
+      }, job.shopId);
       Object.assign(job, calculated, { colorMode: calculated.printType });
     } else if (req.user.role === "staff") {
       const disallowed = Object.keys(req.body).filter((field) => field !== "status");
@@ -303,8 +354,14 @@ router.put("/:id", protect, validatePrintUpdate, async (req, res) => {
             message: `Staff cannot change status from ${job.status} to ${req.body.status}`,
           });
         }
-        if (req.body.status === "Completed" && job.paymentStatus !== "Paid") {
-          return res.status(400).json({ success: false, message: "An unpaid order cannot be completed" });
+        if (paidOnlyStatuses.has(req.body.status) && job.paymentStatus !== "Paid") {
+          return res.status(400).json({ success: false, message: "An unpaid order cannot enter the print workflow" });
+        }
+        if (job.printClaimHash && req.body.status !== job.status) {
+          return res.status(409).json({
+            success: false,
+            message: "This order is controlled by the Print Agent",
+          });
         }
         job.status = req.body.status;
       }
@@ -316,8 +373,18 @@ router.put("/:id", protect, validatePrintUpdate, async (req, res) => {
             message: `Cannot change status from ${job.status} to ${req.body.status}`,
           });
         }
-        if (req.body.status === "Completed" && job.paymentStatus !== "Paid") {
-          return res.status(400).json({ success: false, message: "An unpaid order cannot be completed" });
+        if (paidOnlyStatuses.has(req.body.status) && job.paymentStatus !== "Paid") {
+          return res.status(400).json({ success: false, message: "An unpaid order cannot enter the print workflow" });
+        }
+        if (
+          job.printClaimHash &&
+          req.body.status !== job.status &&
+          req.body.status !== "Cancelled"
+        ) {
+          return res.status(409).json({
+            success: false,
+            message: "This order is controlled by the Print Agent",
+          });
         }
         job.status = req.body.status;
       }
@@ -330,6 +397,7 @@ router.put("/:id", protect, validatePrintUpdate, async (req, res) => {
             _id: req.body.assignedStaff,
             role: "staff",
             shopId: job.shopId,
+            isAvailable: { $ne: false },
           });
           if (!staff) {
             return res.status(400).json({ success: false, message: "Staff must belong to this order's shop" });
@@ -341,12 +409,18 @@ router.put("/:id", protect, validatePrintUpdate, async (req, res) => {
         const optionFieldsPresent = ["copies", "printType", "side", "paperSize"]
           .some((field) => req.body[field] !== undefined);
         if (optionFieldsPresent) {
+          if (paymentHasStarted(job)) {
+            return res.status(409).json({
+              success: false,
+              message: "Payment has started; print options cannot be changed",
+            });
+          }
           const calculated = await calculatePrice(job.pages, {
             copies: req.body.copies ?? job.copies,
             printType: req.body.printType ?? job.printType,
             side: req.body.side ?? job.side,
             paperSize: req.body.paperSize ?? job.paperSize,
-          });
+          }, job.shopId);
           Object.assign(job, calculated, { colorMode: calculated.printType });
         }
       }
@@ -360,6 +434,7 @@ router.put("/:id", protect, validatePrintUpdate, async (req, res) => {
 
     await job.save();
     const updated = await populateJob(PrintJob.findById(job._id));
+    emitJobUpdate(updated);
     return res.json({ success: true, message: "Order updated", job: updated });
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message || "Unable to update order" });
@@ -373,8 +448,25 @@ router.delete("/:id", protect, async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) {
     return res.status(400).json({ success: false, message: "Invalid order ID" });
   }
-  const job = await PrintJob.findById(req.params.id);
+  const job = await PrintJob.findById(req.params.id).select(
+    "+cloudinaryPublicId +cloudinaryDeliveryType"
+  );
   if (!job) return res.status(404).json({ success: false, message: "Order not found" });
+  if (job.cloudinaryPublicId) {
+    try {
+      await cloudinary.uploader.destroy(job.cloudinaryPublicId, {
+        resource_type: "raw",
+        type: job.cloudinaryDeliveryType || "authenticated",
+        invalidate: true,
+      });
+    } catch (error) {
+      console.error("Cloudinary order cleanup failed:", error.message);
+      return res.status(502).json({
+        success: false,
+        message: "Unable to remove the stored print file; the order was not deleted",
+      });
+    }
+  }
   await job.deleteOne();
   return res.json({ success: true, message: "Order deleted" });
 });

@@ -21,7 +21,7 @@ function Hero() {
               </h1>
 
               <p className="lead mt-4">
-                Upload your PDF, pay online and collect your prints without waiting in line.
+                Upload a PDF or image, choose print settings, pay, and track the order before pickup.
               </p>
 
               <div className="mt-4">
@@ -41,9 +41,9 @@ function Hero() {
               </div>
 
               <div className="mt-5">
-                <p>✔ Secure Payments</p>
-                <p>✔ Fast Printing</p>
-                <p>✔ Email Notifications</p>
+                <p>✔ Server-verified pricing</p>
+                <p>✔ Online order tracking</p>
+                <p>✔ Razorpay, UPI, and cash options</p>
               </div>
             </div>
 
@@ -76,7 +76,7 @@ function Hero() {
           <div className="col-md-3 mb-4">
             <FaCreditCard size={50} className="text-success mb-3" />
             <h5>Pay Online</h5>
-            <p>Quick and secure online payments.</p>
+            <p>Choose an available payment method for your shop.</p>
           </div>
 
           <div className="col-md-3 mb-4">
@@ -100,23 +100,23 @@ function Hero() {
           <div className="row text-center">
 
             <div className="col-md-3">
-              <h2 className="text-primary">500+</h2>
-              <p>Orders</p>
+              <h2 className="text-primary">PDF</h2>
+              <p>Page counting</p>
             </div>
 
             <div className="col-md-3">
-              <h2 className="text-success">100+</h2>
-              <p>Customers</p>
+              <h2 className="text-success">JPG/PNG</h2>
+              <p>Image uploads</p>
             </div>
 
             <div className="col-md-3">
-              <h2 className="text-danger">99%</h2>
-              <p>Success Rate</p>
+              <h2 className="text-danger">3</h2>
+              <p>Payment options</p>
             </div>
 
             <div className="col-md-3">
-              <h2 className="text-warning">24/7</h2>
-              <p>Availability</p>
+              <h2 className="text-warning">Live</h2>
+              <p>Order tracking</p>
             </div>
 
           </div>

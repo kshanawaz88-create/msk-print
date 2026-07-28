@@ -2,6 +2,8 @@ const byId = (id) => document.getElementById(id);
 
 const state = {
   authenticated: false,
+  shopSelectionRequired: false,
+  availableShops: [],
   user: null,
   shop: null,
   queue: [],
@@ -201,8 +203,22 @@ const renderLogs = () => {
 };
 
 const render = () => {
-  setHidden(byId("loginView"), state.authenticated);
+  setHidden(byId("loginView"), state.authenticated || state.shopSelectionRequired);
+  setHidden(byId("shopSelectionView"), !state.shopSelectionRequired || state.authenticated);
   setHidden(byId("dashboardView"), !state.authenticated);
+  if (state.shopSelectionRequired && !state.authenticated) {
+    const select = byId("agentShop");
+    const selected = select.value;
+    select.replaceChildren();
+    state.availableShops.forEach((shop) => {
+      const option = document.createElement("option");
+      option.value = shop.id;
+      option.textContent = `${text(shop.shopName)}${shop.shopCode ? ` (${shop.shopCode})` : ""}`;
+      select.append(option);
+    });
+    if (state.availableShops.some((shop) => shop.id === selected)) select.value = selected;
+    return;
+  }
   if (!state.authenticated) return;
 
   byId("shopIdentity").textContent =
@@ -281,6 +297,23 @@ byId("loginForm").addEventListener("submit", async (event) => {
       loginError.message || "Unable to sign in";
 
     setHidden(error, false);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+byId("shopSelectionForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = byId("selectShopButton");
+  const errorNode = byId("shopSelectionError");
+  setHidden(errorNode, true);
+  button.disabled = true;
+  try {
+    const result = await window.printAgent.selectShop(byId("agentShop").value);
+    mergeState(result.state || result);
+  } catch (error) {
+    errorNode.textContent = error.message || "Unable to select this shop";
+    setHidden(errorNode, false);
   } finally {
     button.disabled = false;
   }

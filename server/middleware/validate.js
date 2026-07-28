@@ -77,6 +77,14 @@ const validateStaff = (creating) => (req, res, next) => {
   }
   if ((creating || req.body.shopId !== undefined) && !mongoose.isValidObjectId(req.body.shopId)) return fail(res, "Invalid shop ID");
   if (req.body.assignedPrinter !== undefined && text(req.body.assignedPrinter).length > 100) return fail(res, "Printer name cannot exceed 100 characters");
+  if (
+    req.body.employeeId !== undefined &&
+    req.body.employeeId !== "" &&
+    !/^[a-zA-Z0-9_-]{1,50}$/.test(text(req.body.employeeId))
+  ) return fail(res, "Employee ID may contain 1 to 50 letters, numbers, underscores, or hyphens");
+  if (req.body.isAvailable !== undefined && typeof req.body.isAvailable !== "boolean") {
+    return fail(res, "Staff availability must be true or false");
+  }
   next();
 };
 

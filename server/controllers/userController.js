@@ -21,7 +21,7 @@ exports.getStaff = async (req, res) => {
 
     res.json({ success: true, count: staff.length, staff });
   } catch (error) {
-    console.log(error);
+    console.error("Staff list failed:", error.message);
 
     res.status(500).json({
       success: false,
@@ -61,8 +61,9 @@ exports.createStaff = async (req, res) => {
       return res.status(400).json({ success: false, message: "Selected shop does not exist" });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
     const existingUser = await User.findOne({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
     });
 
     if (existingUser) {
@@ -73,8 +74,8 @@ exports.createStaff = async (req, res) => {
     }
 
     const staff = await User.create({
-      fullName,
-      email,
+      fullName: fullName.trim(),
+      email: normalizedEmail,
       password,
       role: "staff",
       shopId,
@@ -98,11 +99,13 @@ exports.createStaff = async (req, res) => {
       staff: populatedStaff,
     });
   } catch (error) {
-    console.log(error);
+    console.error("Staff creation failed:", error.message);
 
-    res.status(500).json({
+    res.status(error?.code === 11000 ? 409 : 500).json({
       success: false,
-      message: "Unable to create staff",
+      message: error?.code === 11000
+        ? "Staff email or employee ID already exists"
+        : "Unable to create staff",
     });
   }
 };
@@ -152,11 +155,11 @@ exports.updateStaff = async (req, res) => {
     }
 
     if (fullName !== undefined) {
-      staff.fullName = fullName;
+      staff.fullName = fullName.trim();
     }
 
     if (email !== undefined) {
-      staff.email = email;
+      staff.email = email.trim().toLowerCase();
     }
 
     let oldShopId;
@@ -211,11 +214,13 @@ exports.updateStaff = async (req, res) => {
       staff: updatedStaff,
     });
   } catch (error) {
-    console.log(error);
+    console.error("Staff update failed:", error.message);
 
-    res.status(500).json({
+    res.status(error?.code === 11000 ? 409 : 500).json({
       success: false,
-      message: "Unable to update staff",
+      message: error?.code === 11000
+        ? "Staff email or employee ID already exists"
+        : "Unable to update staff",
     });
   }
 };
@@ -249,7 +254,7 @@ exports.deleteStaff = async (req, res) => {
       message: "Staff deleted successfully",
     });
   } catch (error) {
-    console.log(error);
+    console.error("Staff deletion failed:", error.message);
 
     res.status(500).json({
       success: false,

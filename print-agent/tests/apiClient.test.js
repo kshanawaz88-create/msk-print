@@ -8,7 +8,7 @@ const test = require("node:test");
 
 const { ApiClient, ApiError, validateBaseUrl } = require("../src/lib/apiClient");
 
-test("API client attaches agent JWT to protected queue calls but not login", async () => {
+test("API client uses normal login then attaches scoped JWT to queue calls", async () => {
   const requests = [];
   const client = new ApiClient({
     baseUrl: "http://localhost:5000",
@@ -22,12 +22,37 @@ test("API client attaches agent JWT to protected queue calls but not login", asy
     },
   });
 
-  await client.login({ shopId: "SHOP", email: "owner@example.com", password: "secret1" });
+  await client.login({ email: "owner@example.com", password: "secret1" });
   await client.getQueue();
 
   assert.equal(requests[0].options.headers.Authorization, undefined);
+  assert.match(requests[0].url, /\/api\/auth\/login$/);
+  assert.equal(requests[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    email: "owner@example.com",
+    password: "secret1",
+  });
   assert.equal(requests[1].options.headers.Authorization, "Bearer agent.jwt.value");
   assert.match(requests[1].url, /\/api\/print\/queue$/);
+});
+
+test("agent session exchange uses the web JWT and selected shop", async () => {
+  const requests = [];
+  const client = new ApiClient({
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  await client.createAgentSession("web.jwt.value", "64b000000000000000000001");
+  assert.match(requests[0].url, /\/api\/agent\/session$/);
+  assert.equal(requests[0].options.headers.Authorization, "Bearer web.jwt.value");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    shopId: "64b000000000000000000001",
+  });
 });
 
 test("secure file download sends claim header and accepts only supported print bytes", async (t) => {

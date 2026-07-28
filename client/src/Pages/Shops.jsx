@@ -7,9 +7,12 @@ import AddShopModal from "../components/AddShopModal";
 function Shops() {
   const [shops, setShops] = useState([]);
   const [showModal, setShowModal] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   const loadShops = async () => {
   try {
+    setError("");
     const res = await API.get("/api/shops");
 
     if (Array.isArray(res.data)) {
@@ -20,8 +23,10 @@ function Shops() {
       setShops([]);
     }
   } catch (error) {
-    console.log(error);
     setShops([]);
+    setError(error.response?.data?.message || "Unable to load shops");
+  } finally {
+    setLoading(false);
   }
 };
 
@@ -36,7 +41,7 @@ function Shops() {
       await API.delete(`/api/shops/${id}`);
       loadShops();
     } catch (error) {
-      console.log(error);
+      setError(error.response?.data?.message || "Unable to delete shop");
     }
   };
 
@@ -65,6 +70,8 @@ function Shops() {
       <Navbar />
 
       <div className="container mt-5">
+
+        {error && <div className="alert alert-danger">{error}</div>}
 
         <div className="d-flex justify-content-between align-items-center mb-4">
           <h2>🏪 Shop Management</h2>
@@ -106,7 +113,11 @@ function Shops() {
 
               <tbody>
 
-                {shops.length === 0 ? (
+                {loading ? (
+                  <tr>
+                    <td colSpan="6" className="text-center">Loading shops...</td>
+                  </tr>
+                ) : shops.length === 0 ? (
                   <tr>
                     <td colSpan="6" className="text-center">
                       No Shops Found
