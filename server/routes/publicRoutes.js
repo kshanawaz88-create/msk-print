@@ -12,6 +12,7 @@ const { uploadLimiter } = require("../middleware/rateLimits");
 const paymentService = require(
   "../services/shopPaymentService"
 );
+const { emitOrderUpdate } = require("../socket");
 
 const router = express.Router();
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -729,6 +730,12 @@ router.post(
       });
 
       jobCreated = true;
+
+emitOrderUpdate({
+  orderToken: job._id.toString(),
+  shopId: job.shopId.toString(),
+  order: job,
+});
 
       return res.status(201).json({
         success: true,
