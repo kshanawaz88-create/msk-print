@@ -61,13 +61,34 @@ const loginUser = async (req, res) => {
     const password = req.body.password;
 
     if (!email || !password) {
-      return res.status(400).json({ success: false, message: "Email and password are required" });
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required",
+      });
     }
 
-    const user = await User.findOne({ email }).select("+password").populate("shopId", "shopName");
-    if (!user || !(await user.comparePassword(password))) {
-      return res.status(401).json({ success: false, message: "Invalid email or password" });
+    console.log("====== LOGIN DEBUG ======");
+    console.log("Email:", email);
+    console.log("Password length:", password.length);
+
+    const user = await User.findOne({ email })
+      .select("+password")
+      .populate("shopId", "shopName");
+
+    console.log("User found:", !!user);
+
+    if (user) {
+      const passwordMatch = await user.comparePassword(password);
+      console.log("Password match:", passwordMatch);
     }
+
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
+    }
+
     if (user.role === "staff" && user.isAvailable === false) {
       return res.status(403).json({
         success: false,
@@ -87,7 +108,10 @@ const loginUser = async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error.message);
-    return res.status(500).json({ success: false, message: "Unable to login" });
+    return res.status(500).json({
+      success: false,
+      message: "Unable to login",
+    });
   }
 };
 
